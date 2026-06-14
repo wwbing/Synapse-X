@@ -21,6 +21,9 @@ struct AimConfig {
     float aimRange      = 500.0f;  // max px from screen center to engage
     float sensitivity   = 1.0f;    // game sensitivity multiplier
     float minConfidence = 0.25f;   // ignore detections below this confidence
+    int   aimPoint      = 0;       // 0 = body (bbox center), 1 = head (top portion)
+    float headOffset    = 0.12f;   // when aimPoint=1, aim at top `headOffset` of bbox
+                                   //   (0.10 = top 10%, 0.15 = top 15%)
 };
 
 class MouseController {

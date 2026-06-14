@@ -268,16 +268,26 @@ int main(int argc, char* argv[]) {
                     }
 
                     if (best) {
+                        // Read config (may be changed via web UI)
+                        auto aimCfg = tuner.GetConfig();
+
+                        // Compute aim point based on config
+                        float bboxH = best->y2 - best->y1;
                         float targetCx = (best->x1 + best->x2) * 0.5f;
-                        float targetCy = (best->y1 + best->y2) * 0.5f;
+                        float targetCy;
+                        if (aimCfg.aimPoint == 1) {
+                            // Head: top `headOffset` of bbox
+                            targetCy = best->y1 + bboxH * aimCfg.headOffset;
+                        } else {
+                            // Body: bbox center (default)
+                            targetCy = (best->y1 + best->y2) * 0.5f;
+                        }
 
                         // Update web panel target info
                         tuner.UpdateTarget(targetCx, targetCy,
                                            best->confidence, bestDist,
                                            static_cast<int>(best->classId));
 
-                        // Use tuner config (may be changed via web UI)
-                        auto aimCfg = tuner.GetConfig();
                         mouse.SetConfig(aimCfg);
 
                         if (tuner.IsAimEnabled() &&

@@ -86,6 +86,16 @@ static const char kHtmlPage[] = R"html(<!DOCTYPE html>
     <label>Min Confidence <span class="val" id="vConf">0.25</span></label>
     <input type="range" id="minConfidence" min="0.0" max="1.0" step="0.01" value="0.25">
 
+    <label>Aim Point <span class="val" id="vAimPt">Body</span></label>
+    <select id="aimPoint" style="width:100%;padding:6px;background:var(--bg);color:var(--text);
+      border:1px solid var(--border);border-radius:4px;margin-bottom:12px;font-size:14px;">
+      <option value="0">Body (bbox center)</option>
+      <option value="1">Head (top of bbox)</option>
+    </select>
+
+    <label>Head Offset <span class="val" id="vHeadOff">0.12</span></label>
+    <input type="range" id="headOffset" min="0.05" max="0.25" step="0.01" value="0.12">
+
     <div class="toggle">
       <span>Aim Enabled</span>
       <input type="checkbox" id="aimEnabled" checked>
@@ -114,13 +124,19 @@ const HOST = location.origin;
 function $(id) { return document.getElementById(id); }
 
 // ── Sliders → POST config ──────────────────────────────
-['smoothFactor','aimRange','sensitivity','minConfidence'].forEach(id => {
+['smoothFactor','aimRange','sensitivity','minConfidence','headOffset'].forEach(id => {
   $(id).addEventListener('input', () => {
-    $('v'+id.charAt(0).toUpperCase()+id.slice(1)).textContent = $(id).value;
+    let v = $(id).value;
+    if (id==='aimRange') v = parseInt(v);
+    $('v'+id.charAt(0).toUpperCase()+id.slice(1)).textContent = v;
     postConfig();
   });
 });
 $('aimEnabled').addEventListener('change', postConfig);
+$('aimPoint').addEventListener('change', function() {
+  $('vAimPt').textContent = this.value==='1' ? 'Head' : 'Body';
+  postConfig();
+});
 
 function getConfig() {
   return {
@@ -128,6 +144,8 @@ function getConfig() {
     aimRange:      parseInt($('aimRange').value),
     sensitivity:   parseFloat($('sensitivity').value),
     minConfidence: parseFloat($('minConfidence').value),
+    aimPoint:      parseInt($('aimPoint').value),
+    headOffset:    parseFloat($('headOffset').value),
     aimEnabled:    $('aimEnabled').checked
   };
 }
@@ -136,11 +154,15 @@ function setConfig(cfg) {
   $('aimRange').value      = cfg.aimRange;
   $('sensitivity').value   = cfg.sensitivity;
   $('minConfidence').value = cfg.minConfidence;
+  $('aimPoint').value      = cfg.aimPoint || 0;
+  $('headOffset').value    = cfg.headOffset || 0.12;
   $('aimEnabled').checked  = cfg.aimEnabled;
-  ['Smooth','Range','Sens','Conf'].forEach((n,i) => {
-    $('v'+n).textContent = [cfg.smoothFactor, cfg.aimRange,
-      cfg.sensitivity.toFixed(2), cfg.minConfidence][i];
-  });
+  $('vSmooth').textContent = cfg.smoothFactor;
+  $('vRange').textContent  = cfg.aimRange;
+  $('vSens').textContent   = cfg.sensitivity.toFixed(2);
+  $('vConf').textContent   = cfg.minConfidence;
+  $('vAimPt').textContent  = (cfg.aimPoint===1) ? 'Head' : 'Body';
+  $('vHeadOff').textContent = (cfg.headOffset||0.12).toFixed(2);
 }
 function postConfig() {
   fetch(HOST+'/api/config', {
@@ -301,6 +323,8 @@ void HttpTuner::ServerThread() {
         json += jsonStr("aimRange",      (int)m_state.config.aimRange) + ",";
         json += jsonStr("sensitivity",   m_state.config.sensitivity) + ",";
         json += jsonStr("minConfidence", m_state.config.minConfidence) + ",";
+        json += jsonStr("aimPoint",      m_state.config.aimPoint) + ",";
+        json += jsonStr("headOffset",    m_state.config.headOffset) + ",";
         json += jsonStr("aimEnabled",    m_state.aimEnabled);
         json += "},";
         // Stats
@@ -336,6 +360,8 @@ void HttpTuner::ServerThread() {
         if (extractFloat(body, "aimRange", f))      m_state.config.aimRange      = f;
         if (extractFloat(body, "sensitivity", f))   m_state.config.sensitivity   = f;
         if (extractFloat(body, "minConfidence", f)) m_state.config.minConfidence = f;
+        if (extractFloat(body, "headOffset", f))    m_state.config.headOffset    = f;
+        if (extractFloat(body, "aimPoint", f))      m_state.config.aimPoint      = (int)f;
         if (extractBool(body, "aimEnabled", b))     m_state.aimEnabled           = b;
 
         res.set_content("{\"ok\":true}", "application/json");
