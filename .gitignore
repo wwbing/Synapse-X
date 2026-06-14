@@ -1,0 +1,58 @@
+# ──────────────────────────────────────────────────────────
+#  Synapse-X  .gitignore
+#  Mono-repo for Host (sender) + Client (inference receiver)
+# ──────────────────────────────────────────────────────────
+
+# ── Build output directories ──────────────────────────
+build*/
+out/
+_build/
+_deps/
+
+# ── CMake generated files ─────────────────────────────
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+CPackConfig.cmake
+CPackSourceConfig.cmake
+
+# ── MSVC / Visual Studio ──────────────────────────────
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.slnx
+
+# ── Compiled binaries ─────────────────────────────────
+*.exe
+*.dll
+*.lib
+*.so
+*.dylib
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.iobj
+*.ipdb
+
+# ── IDE ───────────────────────────────────────────────
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Test artifacts ────────────────────────────────────
+test_roi.bmp

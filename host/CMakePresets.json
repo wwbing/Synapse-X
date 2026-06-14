@@ -1,0 +1,42 @@
+{
+    "version": 8,
+    "configurePresets": [
+        {
+            "name": "template",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
+            "name": "windows-x64",
+            "displayName": "Windows x64 — Host",
+            "description": "Visual Studio 2026 — x64 — Windows SDK 10.0.26100",
+            "inherits": "template",
+            "generator": "Visual Studio 18 2026",
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "toolset": {
+                "value": "host=x64",
+                "strategy": "set"
+            },
+            "binaryDir": "${sourceDir}/build_x64"
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "release",
+            "displayName": "Host Release",
+            "configurePreset": "windows-x64",
+            "configuration": "RelWithDebInfo"
+        },
+        {
+            "name": "debug",
+            "displayName": "Host Debug",
+            "configurePreset": "windows-x64",
+            "configuration": "Debug"
+        }
+    ]
+}
