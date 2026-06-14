@@ -155,7 +155,19 @@ ReplyHeader 16B: magic(0x5359) frameId(4) numDets(2) padding(8)
 
 ---
 
-## 9. 速查
+## 9. Active Issues
+
+### Inference Performance
+
+| # | Symptom | Suspected Cause | Fix Direction |
+|---|---------|-----------------|---------------|
+| C1 | **Inference time spikes** — normal ~3ms, but periodically jumps to 17ms, 27ms | Likely GPU contention or CUDA context switching: (a) TensorRT execution context re-optimization mid-inference, (b) OS/driver DPC latency, (c) power management throttling GPU clocks, (d) memory allocation in the hot path. | Profile with NVIDIA Nsight Systems. Lock GPU clocks (`nvidia-smi -lgc`). Pre-allocate all CUDA memory at init. Check for `cudaDeviceSynchronize()` or implicit syncs. Warm up engine with 50+ inference runs before entering main loop. |
+| C2 | **Inference variance causes aim jitter on Host** | If inference takes 3ms one frame and 27ms the next, Host receives detections at irregular intervals. The fixed 170Hz aim loop then acts on stale data for several frames. | Ensure inference is deterministic (dedicated CUDA stream, no competing GPU work). Host-side: timestamp detections, skip if older than N ms. Consider batching or double-buffering CUDA memory. |
+| C3 | **GPU memory not pre-warmed** | First few inferences may trigger lazy allocation or JIT compilation in the driver / TensorRT runtime. | Run a warm-up loop (50-100 dummy inferences) before entering the recv loop. Profile memory usage with `cudaMemGetInfo` at init vs steady-state. |
+
+---
+
+## 10. 速查
 
 ```
 BUILD:  cd client && cmake --preset windows-x64 && cmake --build build_x64 --config RelWithDebInfo
@@ -163,6 +175,6 @@ RUN:    .\build_x64\RelWithDebInfo\SynapseX_Client.exe [port] [engine] [hostIp] 
 DATA:   UDP :8888 ← Host (20B header, LZ4 chunks)
 REPLY:  UDP :8889 → Host (16B header, DetectionRaw[])
 MODEL:  416×416 FP16, bf416.engine
-DELAY:  ~3.5 ms total
+DELAY:  ~3.5 ms typical, spikes to 17-27ms (see §9)
 FPS:    170 sustained, 0% drop
 ```
