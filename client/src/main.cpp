@@ -10,9 +10,10 @@
 //   · Inference results (detections) printed per frame (limited rate).
 //
 // Usage:
-//   .\SynapseX_Client.exe [port] [enginePath]
+//   .\SynapseX_Client.exe [port] [enginePath] [hostIp]
 //   Default port: 8888
-//   Default engine: model/bf416.engine
+//   Default engine: ../../model/bf416.engine
+//   Default hostIp: 192.168.100.1 (reply port: 8889)
 //
 // Build:
 //   cd client
@@ -21,6 +22,7 @@
 
 #include "UdpReceiver.h"
 #include "TrtInference.h"
+#include "UdpReplySender.h"
 
 #include <windows.h>
 
@@ -110,11 +112,15 @@ int main(int argc, char* argv[]) {
         ? argv[2]
         : "../../model/bf416.engine";
 
+    std::string hostIp = (argc > 3)
+        ? argv[3]
+        : "192.168.100.1";
+
     fprintf(stderr, "============================================\n");
     fprintf(stderr, "  Synapse-X Client — Full Pipeline\n");
     fprintf(stderr, "  Listening on: 0.0.0.0:%u\n", listenPort);
     fprintf(stderr, "  Engine path:  %s\n", enginePath.c_str());
-    fprintf(stderr, "  Dynamic ROI — width/height from PacketHeader\n");
+    fprintf(stderr, "  Reply to:     %s:8889\n", hostIp.c_str());
     fprintf(stderr, "============================================\n\n");
 
     // ── Initialize UDP receiver ──────────────────────────
@@ -131,6 +137,14 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "[WARN] TensorRT inference NOT available. "
                 "Running in receive-only mode.\n");
         fprintf(stderr, "[WARN] Check engine path: %s\n", enginePath.c_str());
+    }
+
+    // ── Initialize reply sender ───────────────────────────
+    SynapseX::UdpReplySender replySender;
+    bool replyReady = replySender.Initialize(hostIp, 8889);
+    if (!replyReady) {
+        fprintf(stderr, "[WARN] Reply sender init FAILED. "
+                "Running without reply channel.\n");
     }
 
     fprintf(stderr, "[INFO] Waiting for data from Host...\n");
@@ -155,6 +169,11 @@ int main(int argc, char* argv[]) {
     uint64_t    prevBytes       = 0;
     uint64_t    prevInfer       = 0;
 
+    // ── Per-second timing accumulators ──────────────────
+    double      sumRecvMs       = 0.0;
+    double      sumInferMs      = 0.0;
+    uint64_t    timedFrames     = 0;
+
     // Detection rate limiting: only print detections every N frames
     constexpr int kPrintDetEvery = 30;
 
@@ -163,7 +182,9 @@ int main(int argc, char* argv[]) {
     // ═══════════════════════════════════════════════════════
     while (g_running) {
         // ── Stage 1: Receive & decompress ─────────────────
+        auto t0 = Clock::now();
         bool gotFrame = receiver.TryReceive(frameBuffer, receivedFrameId);
+        auto t1 = Clock::now();
 
         if (gotFrame) {
             totalFrames++;
@@ -200,9 +221,21 @@ int main(int argc, char* argv[]) {
                 if (roiW == static_cast<uint16_t>(trt.GetModelWidth()) &&
                     roiH == static_cast<uint16_t>(trt.GetModelHeight())) {
 
+                    auto t2 = Clock::now();
                     std::vector<SynapseX::Detection> dets =
                         trt.Infer(frameBuffer.data(), 0.25f);
+                    auto t3 = Clock::now();
                     inferCount++;
+
+                    // Accumulate per-frame timing
+                    sumRecvMs  += ToMs(t1 - t0);
+                    sumInferMs += ToMs(t3 - t2);
+                    timedFrames++;
+
+                    // ── Stage 3: Send reply to Host ───────────
+                    if (replyReady && !dets.empty()) {
+                        replySender.SendReplies(receivedFrameId, dets);
+                    }
 
                     // Print detections periodically
                     if (totalFrames % kPrintDetEvery == 0 && !dets.empty()) {
@@ -261,21 +294,25 @@ int main(int argc, char* argv[]) {
             uint16_t roiW = receiver.GetLastFrameWidth();
             uint16_t roiH = receiver.GetLastFrameHeight();
 
+            double avgRecvMs  = timedFrames > 0 ? sumRecvMs  / timedFrames : 0.0;
+            double avgInferMs = timedFrames > 0 ? sumInferMs / timedFrames : 0.0;
+            double avgTotalMs = avgRecvMs + avgInferMs;
+
             if (packetsThisSec > 0 || framesThisSec > 0) {
                 fprintf(stderr,
                     "---- per-second stats --------------------------------\n"
                     "  ROI: %ux%u  |  FPS: %7.1f  |  frames: %5llu  |  "
                     "dropped: %5llu  |  drop rate: %5.1f%%\n"
-                    "  inference: %5llu/s  |  throughput: %7.2f MB/s  |  "
-                    "total frames: %llu\n",
+                    "  recv: %6.2f ms  |  infer: %6.2f ms  |  total: %6.2f ms  |  "
+                    "inference: %5llu/s  |  throughput: %6.2f MB/s\n",
                     roiW, roiH,
                     fps,
                     static_cast<unsigned long long>(framesThisSec),
                     static_cast<unsigned long long>(droppedThisSec),
                     dropRate,
+                    avgRecvMs, avgInferMs, avgTotalMs,
                     static_cast<unsigned long long>(inferThisSec),
-                    MBps,
-                    static_cast<unsigned long long>(curFrames));
+                    MBps);
             }
 
             prevFrames  = curFrames;
@@ -283,6 +320,11 @@ int main(int argc, char* argv[]) {
             prevPackets = curPackets;
             prevBytes   = curBytes;
             prevInfer   = inferCount;
+
+            // Reset timing accumulators each second
+            sumRecvMs   = 0.0;
+            sumInferMs  = 0.0;
+            timedFrames = 0;
 
             windowStart = Clock::now();
         }
@@ -317,6 +359,7 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "============================================\n");
 
     trt.Cleanup();
+    replySender.Cleanup();
     receiver.Cleanup();
     return 0;
 }

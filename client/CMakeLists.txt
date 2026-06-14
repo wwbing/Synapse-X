@@ -157,6 +157,7 @@ endif()
 # ═══════════════════════════════════════════════════════════════
 set(CLIENT_SOURCES
     src/UdpReceiver.cpp
+    src/UdpReplySender.cpp
     src/TrtInference.cpp
     src/main.cpp
 )

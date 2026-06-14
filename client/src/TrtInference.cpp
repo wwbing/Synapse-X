@@ -143,12 +143,11 @@ bool TrtInference::Initialize(const std::string& enginePath,
             return false;
         }
 
-        ctx->setInputTensorAddress(name, devPtr);
-        ctx->setOutputTensorAddress(name, devPtr);
-
         if (mode == nvinfer1::TensorIOMode::kINPUT) {
+            ctx->setInputTensorAddress(name, devPtr);
             m_dInput = devPtr;
         } else {
+            ctx->setOutputTensorAddress(name, devPtr);
             m_dOutput    = devPtr;
             m_outputBytes = bytes;
         }
