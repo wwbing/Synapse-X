@@ -5,6 +5,7 @@
 //     -> new frame?  LZ4 compress + update cache
 //     -> no change?  re-send cached compressed frame
 //   UDP fragment & send (every tick)
+//   UDP reply receive (drain after each send)
 //
 // Usage:
 //   SynapseX_Host.exe [target_ip] [port] [roi_w] [roi_h]
@@ -13,8 +14,11 @@
 #include "DxgiCapturer.h"
 #include "Lz4Compressor.h"
 #include "UdpSender.h"
+#include "UdpReplyReceiver.h"
+#include "MouseController.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -22,9 +26,7 @@
 #include <thread>
 
 #include <windows.h>    // timeBeginPeriod / timeEndPeriod
-#include <mmsystem.h>   // (link winmm.lib)
-
-#pragma comment(lib, "winmm.lib")
+#include <mmsystem.h>
 
 static std::atomic<bool> g_running{true};
 
@@ -101,8 +103,43 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // UDP reply receiver (Client -> Host, port 8889)
+    SynapseX::UdpReplyReceiver replyReceiver;
+    if (!replyReceiver.Initialize(8889)) {
+        fprintf(stderr, "[FATAL] UdpReplyReceiver init FAILED.\n");
+        return 1;
+    }
+    replyReceiver.SetRoiParams(roiW, roiH,
+                                capturer.GetOutputWidth(),
+                                capturer.GetOutputHeight());
+
+    // Mouse controller (ddll64.dll for aim-assist)
+    SynapseX::MouseController mouse;
+    // Default aim config — tune smoothFactor/sensitivity per game
+    SynapseX::AimConfig aimCfg;
+    aimCfg.smoothFactor = 0.15f;
+    aimCfg.aimRange     = 500.0f;
+    aimCfg.sensitivity  = 1.0f;
+    aimCfg.minConfidence = 0.25f;
+    mouse.SetConfig(aimCfg);
+
+    if (!mouse.Load("ddll64.dll")) {
+        fprintf(stderr, "[WARN] MouseController init FAILED — "
+                "aim-assist disabled. Is ddll64.dll next to the exe?\n");
+        // Non-fatal: pipeline still works without mouse control
+    }
+
+    int screenW = capturer.GetOutputWidth();
+    int screenH = capturer.GetOutputHeight();
+
     fprintf(stderr, "[INFO] All modules initialized. Starting main loop...\n");
+    fprintf(stderr, "[INFO] If game capture fails, try Borderless Windowed mode.\n");
     fprintf(stderr, "[INFO] Press Ctrl+C to stop.\n\n");
+
+    // ── Diagnostic counters ──────────────────────────────
+    int      zeroFrameCount = 0;
+    bool     warnedProtected = false;
+    bool     warnedZero = false;
 
     // ── Main loop state ──────────────────────────────────
     std::vector<uint8_t> rawBuffer;
@@ -137,6 +174,37 @@ int main(int argc, char* argv[]) {
         auto t1 = Clock::now();
 
         if (gotFrame) {
+            // ── Diagnostic: detect zero / protected frames ──
+            const auto& fi = capturer.GetLastFrameInfo();
+            if (fi.ProtectedContentMaskedOut && !warnedProtected) {
+                fprintf(stderr,
+                    "[DIAG] ProtectedContentMaskedOut detected! "
+                    "Game DRM or anti-cheat is blocking capture.\n"
+                    "[DIAG] Try running the game in Borderless Windowed mode.\n");
+                warnedProtected = true;
+            }
+
+            bool allZero = true;
+            for (size_t k = 0; k < rawBuffer.size(); ++k) {
+                if (rawBuffer[k] != 0) { allZero = false; break; }
+            }
+            if (allZero) {
+                zeroFrameCount++;
+                if (!warnedZero && zeroFrameCount > 10) {
+                    fprintf(stderr,
+                        "[DIAG] %d consecutive all-zero frames! "
+                        "Screen=(%d,%d) ROI=(%d,%d) Protected=%u\n"
+                        "[DIAG] Game is likely in Exclusive Fullscreen — "
+                        "switch to Borderless Windowed.\n",
+                        zeroFrameCount, screenW, screenH, roiW, roiH,
+                        fi.ProtectedContentMaskedOut);
+                    warnedZero = true;
+                }
+            } else {
+                zeroFrameCount = 0;
+                warnedZero = false;
+            }
+
             // ── Stage 2: Compress (only on new content) ───
             auto t2a = Clock::now();
             bool ok = compressor.Compress(rawBuffer.data(),
@@ -170,6 +238,59 @@ int main(int argc, char* argv[]) {
             stats.sent++;
             stats.sumSend += ToMs(t3b - t3a);
             frameId++;
+        }
+
+        // ── Stage 4: Receive inference replies ─────────────
+        {
+            std::vector<SynapseX::Detection> detections;
+            uint32_t replyFrameId = 0;
+            if (replyReceiver.ReceiveReplies(detections, replyFrameId)) {
+                if (!detections.empty()) {
+                    // Pick best target: highest-confidence enemy (classId=0)
+                    // closest to screen center
+                    const SynapseX::Detection* best = nullptr;
+                    float bestDist = 1e9f;
+                    float screenCx = static_cast<float>(screenW) * 0.5f;
+                    float screenCy = static_cast<float>(screenH) * 0.5f;
+
+                    for (const auto& d : detections) {
+                        if (d.classId != 0) continue;  // enemy only
+                        float cx = (d.x1 + d.x2) * 0.5f;
+                        float cy = (d.y1 + d.y2) * 0.5f;
+                        float dist = std::sqrt(
+                            (cx - screenCx) * (cx - screenCx) +
+                            (cy - screenCy) * (cy - screenCy));
+                        // Prefer higher confidence; break ties with distance
+                        if (!best || d.confidence > best->confidence ||
+                            (d.confidence == best->confidence && dist < bestDist)) {
+                            best = &d;
+                            bestDist = dist;
+                        }
+                    }
+
+                    if (best) {
+                        float targetCx = (best->x1 + best->x2) * 0.5f;
+                        float targetCy = (best->y1 + best->y2) * 0.5f;
+
+                        if (mouse.AimAtTarget(targetCx, targetCy,
+                                               best->confidence,
+                                               screenW, screenH)) {
+                            // Aim executed — print minimal info
+                            static int aimCount = 0;
+                            if (++aimCount % 30 == 1) {  // throttle: every ~180ms
+                                fprintf(stderr,
+                                    "[Aim] frameId=%u target=%.0f,%.0f "
+                                    "conf=%.2f dist=%.0f\n",
+                                    replyFrameId,
+                                    static_cast<double>(targetCx),
+                                    static_cast<double>(targetCy),
+                                    static_cast<double>(best->confidence),
+                                    static_cast<double>(bestDist));
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // ── Per-second stats report ──────────────────────
@@ -218,5 +339,7 @@ int main(int argc, char* argv[]) {
 
     capturer.Cleanup();
     sender.Cleanup();
+    replyReceiver.Cleanup();
+    mouse.Unload();
     return 0;
 }

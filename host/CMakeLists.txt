@@ -72,6 +72,8 @@ set(HOST_SOURCES
     src/DxgiCapturer.cpp
     src/Lz4Compressor.cpp
     src/UdpSender.cpp
+    src/UdpReplyReceiver.cpp
+    src/MouseController.cpp
     src/main.cpp
 )
 
@@ -81,6 +83,7 @@ set(HOST_LIBS
     d3d11
     dxgi
     ws2_32
+    winmm
 )
 
 # ── Main executable ────────────────────────────────────
@@ -90,6 +93,14 @@ target_include_directories(SynapseX_Host PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../shared/include
 )
 target_link_libraries(SynapseX_Host PRIVATE ${HOST_LIBS})
+
+# Copy ddll64.dll to build output so MouseController can find it
+add_custom_command(TARGET SynapseX_Host POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/mousedll/ddll64.dll"
+        "$<TARGET_FILE_DIR:SynapseX_Host>/ddll64.dll"
+    COMMENT "Copying ddll64.dll to output directory"
+)
 
 # ── BMP capture + LZ4 compression test ─────────────────
 add_executable(SynapseX_Host_TestBmp

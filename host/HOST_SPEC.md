@@ -1,417 +1,193 @@
 # Synapse-X Host Specification
 
-> **Target audience**: Client (Inference machine) developer.
-> This document describes every detail the Client needs to receive, reassemble,
-> decompress, and interpret data sent by the Host.
+> The Host captures the desktop center ROI at a fixed 170 Hz, compresses with LZ4,
+> sends via UDP to the Client for inference, receives detection results back, and
+> drives mouse aim-assist via ddll64.dll.
 
 ---
 
-## 1. System Overview
+## Pipeline Overview
 
 ```
-┌── HOST (this machine) ──────────────────────────────────────────┐
-│                                                                   │
-│  GPU Desktop (e.g. 3840×2160)                                     │
-│       │                                                           │
-│       ▼ DXGI Desktop Duplication + GPU-side center-crop           │
-│  BGRA pixel buffer  (640 × 640 × 4 = 1,638,400 bytes)            │
-│       │                                                           │
-│       ▼ LZ4 raw-block compress (LZ4_compress_fast, acceleration=1)│
-│  Compressed payload  (typically 30–150 KB, varies by content)     │
-│       │                                                           │
-│       ▼ Fragment into chunks ≤ 1400 bytes each                    │
-│  UDP packets  (each = 16-byte PacketHeader + ≤1400-byte payload)  │
-│       │                                                           │
-│       ▼ Winsock2 UDP send                                         │
-│                                                                   │
-└───────┬───────────────────────────────────────────────────────────┘
-        │  Ethernet (physically isolated, direct or switch)
-        ▼
-┌── CLIENT (your machine) ──────────────────────────────────────────┐
-│                                                                   │
-│   UDP recv → reassemble by FrameID → LZ4 decompress → BGRA 640²   │
-│                                                                   │
-└───────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           HOST (this machine)                            │
+│                                                                          │
+│  ┌────────────┐   ┌────────────┐   ┌──────────┐   ┌──────────────────┐ │
+│  │ DxgiCapturer│ → │Lz4Compressor│ → │ UdpSender │ → │  UDP :8888       │─│─→ Client
+│  │ GPU ROI     │   │ LZ4 fast(1) │   │ stack buf │   │  ≤1420B/packet   │ │
+│  │ 0.04 ms     │   │ 0.19 ms     │   │ 0.08 ms   │   │                  │ │
+│  └────────────┘   └────────────┘   └──────────┘   └──────────────────┘ │
+│                                                                          │
+│  ┌──────────────────┐   ┌──────────────────┐                             │
+│  │ UdpReplyReceiver │ ← │  UDP :8889        │←── Client reply           │
+│  │ map → screen     │   │  ReplyHeader+Det[] │                             │
+│  └──────┬───────────┘   └──────────────────┘                             │
+│         │ target selection (best enemy by confidence+distance)           │
+│         ▼                                                                │
+│  ┌──────────────────┐                                                    │
+│  │ MouseController   │   MoveR(dx, dy)  smooth approach 15%/frame        │
+│  │ ddll64.dll        │   aim range ≤500px, min confidence 0.25           │
+│  └──────────────────┘                                                    │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Key numbers:**
-
-| Parameter | Value |
-|-----------|-------|
-| ROI resolution | Configurable (default 640×640, CLI: `[width] [height]`) |
-| Pixel format | BGRA, 8 bits per channel, 4 bytes per pixel |
-| Raw frame size | `width × height × 4` bytes (e.g. 416×416 = 692,224 bytes) |
-| Host target frame rate | 170 Hz (~5.88 ms per frame) |
-| Compression algorithm | LZ4 raw block (NOT LZ4 frame format) |
-| Compression level | `LZ4_compress_fast` acceleration=1 |
+| Stage | Module | Typical latency |
+|-------|--------|-----------------|
+| Capture | `DxgiCapturer` — GPU CopySubresourceRegion (center ROI only), Map to RAM | ~0.04 ms |
+| Compress | `Lz4Compressor` — `LZ4_compress_fast(accel=1)`, pre-allocated buffer | ~0.19 ms |
+| Send | `UdpSender` — stack-allocated header+payload, `sendto()` per chunk | ~0.08 ms |
+| Receive reply | `UdpReplyReceiver` — non-blocking drain, model→screen coord mapping | <0.01 ms |
+| Aim | `MouseController` — `MoveR` relative movement, exponential decay | <0.01 ms |
+| **Total** | | **~0.35 ms** (well under 5.88 ms budget @170 Hz) |
 
 ---
 
-## 2. Wire Protocol: PacketHeader
+## Modules
 
-**File:** `shared/include/PacketHeader.h`
+### DxgiCapturer — GPU Screen Capture
 
-Every UDP datagram carries a **20-byte** header followed by payload:
+- **API**: DXGI Desktop Duplication (D3D11)
+- **ROI**: Center-crop via `CopySubresourceRegion` — only the ROI rectangle is copied to a staging texture, then `Map`'d to system RAM.
+- **Format**: BGRA 8-bit (DXGI_FORMAT_B8G8R8A8_UNORM), top-down.
+- **Recovery**: Auto-rebuilds the D3D11/duplication pipeline on `DXGI_ERROR_ACCESS_LOST`.
+- **Multi-monitor**: Enumerates all outputs, picks the first attached desktop with non-zero area.
+- **Limitation**: Cannot capture Exclusive Fullscreen games (game bypasses desktop compositor). Use Borderless Windowed.
 
-```
-Byte offset  0        2        6        8       10       14       16       18       20
-          ┌────────┬────────┬────────┬────────┬────────┬────────┬────────┬────────┬──────┐
-          │ magic  │frameId │totalCh │chunkIdx│totalSz │payldSz │ width  │ height │ LZ4  │
-          │  2B    │  4B    │  2B    │  2B    │  4B    │  2B    │  2B    │  2B    │ data │
-          └────────┴────────┴────────┴────────┴────────┴────────┴────────┴────────┴──────┘
-           ◄──────────────────── 20-byte PacketHeader ────────────────────► ◄─ payload ─►
-           ◄──────────── ≤ 1420 bytes total per UDP datagram ──────────────────────────►
-```
+### Lz4Compressor — LZ4 Block Compression
 
-### Field definitions
+- **Function**: `LZ4_compress_fast(src, dst, srcSize, dstCap, acceleration=1)`.
+- **Buffers**: Pre-allocated to `LZ4_compressBound(rawSize)` — zero allocation in hot path.
+- **Compression ratio**: 2–25% of raw size depending on desktop content.
+- **Source**: Third-party LZ4 source compiled directly into the project (`thirdparty/lz4-1.10.0/lib/lz4.c`).
 
-| Field | Type | Offset | Description |
-|-------|------|--------|-------------|
-| `magic` | `uint16_t` | 0 | Protocol eye-catcher. Always `0x5358` (ASCII 'SX'). Drop the packet if this does not match. |
-| `frameId` | `uint32_t` | 2 | Monotonic frame counter. Starts at 0, wraps at 2³²⁻¹. **All chunks of the same frame share the same frameId.** |
-| `totalChunks` | `uint16_t` | 6 | Number of UDP packets this compressed frame is split into. |
-| `chunkIndex` | `uint16_t` | 8 | Zero-based index of this packet within the frame. Range: `[0, totalChunks-1]`. |
-| `totalSize` | `uint32_t` | 10 | Total size of the **compressed** LZ4 payload in bytes. |
-| `payloadSize` | `uint16_t` | 14 | Number of valid LZ4 payload bytes in **this** packet. |
-| `width` | `uint16_t` | 16 | **ROI width** in pixels (e.g., 640, 416). Client uses this to size the decompression buffer. |
-| `height` | `uint16_t` | 18 | **ROI height** in pixels (e.g., 640, 416). Raw frame size = `width × height × 4`. |
+### UdpSender — UDP Fragmentation & Send
 
-### Constants
+- **Protocol**: 20-byte `PacketHeader` + ≤1400-byte LZ4 payload per datagram.
+- **Buffer**: Stack-allocated `uint8_t[1420]` — zero heap allocation in send loop.
+- **Socket**: 256 KB `SO_SNDBUF`, blocking send (loopback/broadband LAN can't fill it).
+- **Chunking**: `totalChunks = ceil(totalSize / 1400)`, offset = `chunkIndex × 1400`.
 
-```cpp
-constexpr uint16_t MAX_PAYLOAD_SIZE = 1400;   // max payload per packet
-constexpr uint16_t PROTOCOL_MAGIC   = 0x5358; // 'SX'
-// Effective max UDP datagram = 20 (header) + 1400 (payload) = 1420 bytes
-// Still well under the 1472-byte Ethernet MTU payload limit.
-```
+### UdpReplyReceiver — Client Reply Listener
 
-### Byte order
+- **Port**: UDP 8889, non-blocking drain in the main loop.
+- **Protocol**: `ReplyHeader` (16 bytes, magic=0x5359) + `DetectionRaw[]` (24 bytes each, FP32).
+- **Mapping**: Model-pixel coords → screen coords: `screen = roiOffset + model`.
+- **Target selection**: Best enemy (classId=0) by confidence, tie-break by distance to screen center.
 
-All integer fields are **little-endian** (native x86_64 byte order; both Host and Client are assumed to be x64 Windows).
+### MouseController — Aim-Assist
 
-### Layout guarantee
-
-```cpp
-static_assert(sizeof(PacketHeader) == 20, "PacketHeader must be 20 bytes");
-```
-
-The struct is `#pragma pack(push, 1)` — no alignment padding between fields.
+- **DLL**: `ddll64.dll` — loaded at runtime via `LoadLibrary`/`GetProcAddress`.
+- **API**: `MoveR(dx, dy)` — relative mouse movement in pixels.
+- **Algorithm**: Exponential-decay approach — move `15% × distance` each frame.
+- **Constraints**: Only aim if target within 500px of screen center and confidence ≥ 0.25.
+- **Requires**: Administrator privileges (DLL needs elevation to inject input).
 
 ---
 
-## 3. Reassembly Algorithm (Client side)
-
-### Per-frame state
-
-```cpp
-struct ReassemblyBuffer {
-    uint32_t expectedFrameId;       // frameId currently being collected
-    uint32_t totalSize;             // total compressed size (from header)
-    uint16_t totalChunks;           // expected number of chunks
-    std::vector<bool> receivedMask; // which chunks have arrived
-    std::vector<uint8_t> data;      // reassembled compressed buffer (totalSize bytes)
-    int chunksReceived = 0;
-};
-```
-
-### Algorithm (pseudocode)
-
-```
-1. Receive UDP datagram
-2. If datagram size < 16: drop (too small for header)
-3. Cast first 16 bytes to PacketHeader*
-4. If header.magic != 0x5358: drop (not our protocol)
-5. Extract payload: &datagram[16], length = header.payloadSize
-
-6. If header.frameId > current reassemblyBuffer.expectedFrameId:
-       // New frame arrived — flush old partial buffer, start fresh
-       reassemblyBuffer.reset()
-       reassemblyBuffer.expectedFrameId = header.frameId
-       reassemblyBuffer.totalSize       = header.totalSize
-       reassemblyBuffer.totalChunks     = header.totalChunks
-       reassemblyBuffer.data.resize(header.totalSize)
-       reassemblyBuffer.receivedMask.resize(header.totalChunks, false)
-
-7. If header.frameId != reassemblyBuffer.expectedFrameId:
-       drop (stale packet from old frame)
-
-8. If reassemblyBuffer.receivedMask[header.chunkIndex] == false:
-       // Copy payload into correct position
-       offset = header.chunkIndex * MAX_PAYLOAD_SIZE
-       memcpy(&reassemblyBuffer.data[offset], payload, header.payloadSize)
-       reassemblyBuffer.receivedMask[header.chunkIndex] = true
-       reassemblyBuffer.chunksReceived++
-
-9. If reassemblyBuffer.chunksReceived == reassemblyBuffer.totalChunks:
-       // Frame complete — decompress and use
-       decompress(reassemblyBuffer.data) → BGRA 640×640
-       reset reassemblyBuffer for next frame
-```
-
-### Edge cases
-
-- **Out-of-order delivery**: The `chunkIndex` field lets you place each chunk at the correct byte offset regardless of arrival order.
-- **Duplicate packets**: Check `receivedMask[chunkIndex]` before copying — skip if already received.
-- **Stale packets**: If `frameId` is behind `expectedFrameId`, drop. If it's ahead, flush the old buffer and start the new frame.
-- **Incomplete frames**: The Host sends every frame at ~170 Hz. If a frame is missing chunks after a timeout (e.g., 2× frame period = ~12 ms), discard it and wait for the next `frameId`.
-
----
-
-## 4. Decompression
-
-### Algorithm
-
-The compressed payload is a **raw LZ4 block** (not an LZ4 frame with magic number / frame descriptor).
-
-```cpp
-#include <lz4.h>   // LZ4_decompress_safe
-
-int decompressedSize = LZ4_decompress_safe(
-    reinterpret_cast<const char*>(compressedData.data()),
-    reinterpret_cast<char*>(outputBuffer.data()),
-    static_cast<int>(compressedData.size()),   // compressed size
-    static_cast<int>(outputBuffer.size())      // max output = 640*640*4
-);
-
-// decompressedSize should equal 1638400
-```
-
-### Verification
-
-- Expected output size: **`width × height × 4` bytes** (from PacketHeader fields)
-- Example: 640×640 → 1,638,400 bytes; 416×416 → 692,224 bytes
-- If `decompressedSize != width * height * 4`: decompression error, discard frame
-- `LZ4_decompress_safe` returns a negative value on corruption — handle this gracefully
-
-### Compression parameters the Host uses
-
-| Parameter | Value |
-|-----------|-------|
-| Function | `LZ4_compress_fast(src, dst, srcSize, dstCap, 1)` |
-| Acceleration | 1 (fastest) |
-| Bound | `LZ4_compressBound(1638400)` = 1,644,841 bytes (worst-case) |
-
-You do NOT need to match these exactly on the Client side — `LZ4_decompress_safe` is compatible with any LZ4-compressed block regardless of acceleration setting.
-
----
-
-## 5. Pixel Format
-
-### Memory layout
-
-```
-Byte:    0      1      2      3      4      5      6      7     ...
-       ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬─────
-       │  B0  │  G0  │  R0  │  A0  │  B1  │  G1  │  R1  │  A1  │ ...
-       └──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┴─────
-         ◄────────── pixel 0 ──────────► ◄────────── pixel 1 ──────►
-```
-
-- **Channel order**: B, G, R, A (Blue first, Alpha last)
-- **Format name**: `DXGI_FORMAT_B8G8R8A8_UNORM` / `BGRA` in most graphics APIs
-- **Alpha**: Always 255 (fully opaque) — the Host captures a desktop, not an alpha-blended surface
-- **Orientation**: **Top-down** — the first row of pixels is the top of the screen. No vertical flip needed.
-- **Row stride**: Exactly `width × 4` = 2,560 bytes per row. No extra padding.
-
-### Converting for inference
-
-Most inference models expect RGB or BGR input with normalized float values. Example conversion for a model expecting `[1, 3, 640, 640]` float32 tensor in RGB order:
-
-```python
-# numpy
-bgra = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(640, 640, 4)
-rgb  = bgra[..., 2::-1]                    # drop alpha, reverse channel order
-rgb_float = rgb.astype(np.float32) / 255.0
-tensor = np.transpose(rgb_float, (2, 0, 1))  # HWC → CHW
-tensor = np.expand_dims(tensor, axis=0)       # add batch dim
-```
-
-### Test reference
-
-The Host test program (`SynapseX_Host_TestBmp.exe`) saves `test_roi.bmp` for visual verification. You can use this to calibrate your Client-side decoding. The BMP is 32-bit BGRA with `biHeight = -640` (top-down DIB).
-
----
-
-## 6. Performance Profile
-
-Measured on the Host machine (RTX 5070 Ti, 3840×2160 desktop, 640×640 ROI, RelWithDebInfo build):
-
-| Stage | Typical time | Notes |
-|-------|-------------|-------|
-| GPU copy + Map | ~0.04–0.08 ms | GPU-side CopySubresourceRegion + staging Map |
-| LZ4 compress | ~0.53–0.56 ms | LZ4_compress_fast, acceleration=1 |
-| UDP fragment + send | ~0.15–0.35 ms | Stack buffer, sendto() per chunk |
-| **Pipeline total** | **~0.75–1.10 ms** | Well within 5.88 ms budget for 170 Hz |
-
-**Observed frame rates:**
-
-| Scenario | FPS |
-|----------|-----|
-| Desktop idle (mouse moves only) | 2–5 |
-| Light activity (scrolling, typing) | 25–77 |
-| Heavy activity (window drag, video) | 220–370 |
-
-> FPS is determined by how often Windows repaints the desktop, not by the pipeline.
-> The pipeline itself can sustain 300+ FPS with no bottleneck.
-
-**Compression ratio** is highly content-dependent:
-
-| Desktop content | Typical compressed size | Ratio |
-|-----------------|------------------------|-------|
-| Solid color / simple UI | 30–50 KB | ~2–3% |
-| Mixed text & images | 80–150 KB | ~5–9% |
-| Full-screen video/game | 200–400 KB | ~12–25% |
-
----
-
-## 7. Host CLI Usage
+## Usage
 
 ```powershell
-# Default: 192.168.100.2:8888  640×640
+# Default: 640×640 to 192.168.100.2:8888
 .\SynapseX_Host.exe
 
-# Custom target IP and port
-.\SynapseX_Host.exe 192.168.100.2 8888
-
-# Custom ROI (416×416 for YOLO-style models)
+# Custom target and ROI (e.g. 416×416 for YOLO models)
 .\SynapseX_Host.exe 192.168.100.2 8888 416 416
 
-# The full argument order:
-#   SynapseX_Host.exe [target_ip] [port] [width] [height]
+# Full argument order
+.\SynapseX_Host.exe [target_ip] [port] [width] [height]
+
+# Run as Administrator for mouse control
 ```
 
-ROI constraints: min 64×64, max 4096×4096. Width and height must both be specified or both omitted.
-
-## 8. Quick-start Test (for Client developer)
+ROI constraints: 64–4096 pixels per dimension.
 
 ---
 
-## A. Repository Structure
-
-```
-Synapse-X/                          # mono-repo root
-├── .gitignore
-├── CMakeLists.txt                  # root IDE context only
-│
-├── shared/                         # shared between Host and Client
-│   └── include/
-│       └── PacketHeader.h          # wire protocol (20-byte header)
-│
-├── host/                           # Host sender (this machine)
-│   ├── CMakeLists.txt              # standalone CMake project
-│   ├── CMakePresets.json           # VS 2026 x64 preset
-│   ├── HOST_SPEC.md                # this file
-│   ├── include/
-│   │   ├── DxgiCapturer.h          # GPU screen capture
-│   │   ├── Lz4Compressor.h         # LZ4 compression
-│   │   └── UdpSender.h             # UDP fragmentation + send
-│   ├── src/
-│   │   ├── main.cpp                # production pipeline
-│   │   ├── DxgiCapturer.cpp
-│   │   ├── Lz4Compressor.cpp
-│   │   └── UdpSender.cpp
-│   └── test/
-│       └── test_bmp.cpp            # capture + compress test
-│
-├── client/                         # Client receiver (other machine)
-│   └── CMakeLists.txt              # TODO: UDP recv + LZ4 decompress + TensorRT
-│
-└── thirdparty/
-    └── lz4-1.10.0/                 # LZ4 source (compiled directly)
-```
-
-### Include paths for Client
-
-The shared protocol header is at:
-
-```
-shared/include/PacketHeader.h
-```
-
-In your Client CMakeLists.txt:
-
-```cmake
-target_include_directories(YourClientTarget PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../shared/include
-)
-```
-
-In your C++ code:
-
-```cpp
-#include "PacketHeader.h"
-```
-
-### Building the Host (for reference)
+## Build
 
 ```powershell
 cd host
 cmake --preset windows-x64
 cmake --build build_x64 --config RelWithDebInfo
-# Binary: build_x64/RelWithDebInfo/SynapseX_Host.exe
 ```
 
-Run: `.\SynapseX_Host.exe [target_ip] [port] [width] [height]` (defaults: 192.168.100.2:8888 640x640)
+Requires: CMake 3.28+, Visual Studio 2026 (MSVC 14.51), Windows SDK 10.0.26100+.
+
+Dependencies: D3D11, DXGI, Winsock2 (system). LZ4 compiled from source in `../thirdparty/lz4-1.10.0/`.
 
 ---
 
-## 9. Protocol Change History
+## Directory Layout
 
-**v2 (current): 20-byte header** — added `width` and `height` fields (offset 16, 18).
-Client has been adapted. The header is present in every UDP packet;
-Client reads dimensions from any chunk to size the decompression buffer.
-
-**v1 (deprecated): 16-byte header** — no dimension fields. Client hardcoded 640×640.
+```
+host/
+├── include/
+│   ├── DxgiCapturer.h         GPU desktop duplication capture
+│   ├── Lz4Compressor.h         LZ4 block compression
+│   ├── UdpSender.h             UDP fragmentation + send
+│   ├── UdpReplyReceiver.h      UDP reply listener + coord mapping
+│   └── MouseController.h       ddll64.dll loader + aim-assist
+├── src/
+│   ├── main.cpp                fixed 170 Hz pipeline
+│   ├── DxgiCapturer.cpp
+│   ├── Lz4Compressor.cpp
+│   ├── UdpSender.cpp
+│   ├── UdpReplyReceiver.cpp
+│   └── MouseController.cpp
+├── test/
+│   └── test_bmp.cpp            standalone capture+compress test
+├── mousedll/
+│   └── ddll64.dll              mouse control DLL (committed to repo)
+├── CMakeLists.txt
+├── CMakePresets.json
+└── HOST_SPEC.md                this file
+```
 
 ---
 
-## 10. Deployment Configuration
+## Wire Protocols
 
-The Host itself is **resolution-agnostic** — the CLI params control everything.
+### Host → Client (UDP :8888)
 
-| Scenario | Command | Notes |
-|----------|---------|-------|
-| **Current** (Client has 416 model) | `.\SynapseX_Host.exe 192.168.100.2 8888 416 416` | Match Client TRT engine |
-| **Future** (Client has 640 model) | `.\SynapseX_Host.exe 192.168.100.2 8888 640 640` | Or just `.\SynapseX_Host.exe` (default) |
+20-byte `PacketHeader` + LZ4 payload. See `shared/include/PacketHeader.h`.
 
-> The Client's TRT engine is compiled for a **fixed input size** and does NOT resize.
-> If Host ROI ≠ Client model size, the Client receives and decompresses correctly
-> but **skips inference** (one-time warning printed). Always match the sizes.
+### Client → Host (UDP :8889)
 
----
+16-byte `ReplyHeader` + N × 24-byte `DetectionRaw`. See `shared/include/ReplyPacket.h`.
 
-## 11. Coordinate Mapping (for inference results)
-
-When the Client returns detection bounding boxes, they are in **model pixel space**
-relative to the ROI, not screen space. The Host must map them back:
-
-```
-screen_x = roiX + detection_x
-screen_y = roiY + detection_y
-
-where:
-  roiX = (screenWidth  - roiWidth)  / 2   // center-crop offset
-  roiY = (screenHeight - roiHeight) / 2
-```
-
-Example: 3840×2160 screen, 416×416 ROI, detection at (100, 200) in model space:
-
-```
-roiX = (3840 - 416) / 2 = 1712
-roiY = (2160 - 416) / 2 = 872
-screen_x = 1712 + 100 = 1812
-screen_y = 872  + 200 = 1072
-```
-
-> This mapping is the **Host's responsibility**. The Client sends raw model-space
-> coordinates and does not know the screen resolution.
+Both protocols are little-endian, `#pragma pack(1)`, with magic bytes for validation.
 
 ---
 
-## 12. Future: Host ← Client response channel
+## Tuning
 
-The current protocol is unidirectional (Host → Client). A future iteration will add:
-- A small UDP response packet from Client → Host (inference result: bounding box coordinates)
-- A `requestId` field matching Host frames to Client responses
+### Aim parameters (in `main.cpp`)
 
-This is not yet implemented — coordinate your Client design with this in mind.
+```cpp
+AimConfig cfg;
+cfg.smoothFactor  = 0.15f;   // fraction of remaining distance per frame
+cfg.aimRange      = 500.0f;  // max px from center to engage
+cfg.sensitivity   = 1.0f;    // game sensitivity multiplier
+cfg.minConfidence = 0.25f;   // ignore low-confidence detections
+```
+
+### Frame rate
+
+Fixed 170 Hz via `timeBeginPeriod(1)` + `sleep_until`. Pipeline latency ~0.35 ms means
+plenty of headroom. If the pipeline ever exceeds budget, the cadence resets to avoid
+death-spiral.
+
+### Desktop idle behavior
+
+When the desktop is static, the Host re-sends the cached compressed frame at 170 Hz.
+No re-compression cost — only the cached buffer is re-transmitted. This keeps the
+Client's inference pipeline fed with a steady stream.
+
+---
+
+## Known Limitations
+
+1. **Exclusive Fullscreen**: Cannot capture. Switch game to Borderless Windowed.
+2. **Anti-cheat**: Some games actively block Desktop Duplication regardless of window mode.
+3. **Administrator**: Required for `ddll64.dll` mouse control.
+4. **Multi-GPU laptops**: May need to adjust adapter enumeration if capture targets wrong GPU.

@@ -43,6 +43,9 @@ CPackSourceConfig.cmake
 *.iobj
 *.ipdb
 
+# ── Mouse control DLL (required at runtime) ───────────
+!host/mousedll/ddll64.dll
+
 # ── IDE ───────────────────────────────────────────────
 .idea/
 *.swp
