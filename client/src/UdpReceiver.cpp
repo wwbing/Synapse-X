@@ -84,7 +84,7 @@ bool UdpReceiver::Initialize(uint16_t port) {
     // on the first complete frame based on PacketHeader width/height.
 
     m_initialized = true;
-    fprintf(stderr, "[UdpReceiver] Ready — listening on 0.0.0.0:%u, "
+    fprintf(stderr, "[UdpReceiver] Ready -- listening on 0.0.0.0:%u, "
             "non-blocking, recv buffer %d KB, dynamic ROI\n",
             port, bufSize / 1024);
     return true;

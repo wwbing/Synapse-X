@@ -6,14 +6,15 @@
 //
 // Verification:
 //   · Per-second FPS and drop-rate stats printed to stderr.
-//   · On the 10th successfully decoded frame, saves client_test.bmp.
-//   · Inference results (detections) printed per frame (limited rate).
+//   · Saves 1 BMP per second for debugging: client_0000.bmp, client_0001.bmp ...
+//   · Inference results (detections) printed every 30 frames.
 //
 // Usage:
-//   .\SynapseX_Client.exe [port] [enginePath] [hostIp]
+//   .\SynapseX_Client.exe [port] [enginePath] [hostIp] [--save]
 //   Default port: 8888
 //   Default engine: ../../model/bf416.engine
 //   Default hostIp: 192.168.100.1 (reply port: 8889)
+//   --save : enable per-second BMP dump (default: off)
 //
 // Build:
 //   cd client
@@ -116,11 +117,19 @@ int main(int argc, char* argv[]) {
         ? argv[3]
         : "192.168.100.1";
 
+    bool saveBmp = false;
+    for (int i = 4; i < argc; ++i) {
+        if (strcmp(argv[i], "--save") == 0) {
+            saveBmp = true;
+        }
+    }
+
     fprintf(stderr, "============================================\n");
-    fprintf(stderr, "  Synapse-X Client — Full Pipeline\n");
+    fprintf(stderr, "  Synapse-X Client -- Full Pipeline\n");
     fprintf(stderr, "  Listening on: 0.0.0.0:%u\n", listenPort);
     fprintf(stderr, "  Engine path:  %s\n", enginePath.c_str());
     fprintf(stderr, "  Reply to:     %s:8889\n", hostIp.c_str());
+    fprintf(stderr, "  BMP dump:     %s\n", saveBmp ? "ON (--save)" : "OFF");
     fprintf(stderr, "============================================\n\n");
 
     // ── Initialize UDP receiver ──────────────────────────
@@ -148,17 +157,21 @@ int main(int argc, char* argv[]) {
     }
 
     fprintf(stderr, "[INFO] Waiting for data from Host...\n");
-    fprintf(stderr, "[INFO] Frame 10 will be saved as client_test.bmp\n");
+    if (saveBmp) {
+        fprintf(stderr, "[INFO] BMP dump enabled: 1 per second.\n");
+    }
     fprintf(stderr, "[INFO] Press Ctrl+C to stop.\n\n");
 
     // ── Main loop state ──────────────────────────────────
     std::vector<uint8_t> frameBuffer;
+    std::vector<uint8_t> latestFrame;   // copy of latest frame for per-second BMP save
 
     uint32_t    receivedFrameId = 0;
     uint64_t    totalFrames     = 0;
     uint64_t    inferCount      = 0;
-    bool        bmpSaved        = false;
-    const char* bmpPath         = "client_test.bmp";
+    uint16_t    latestRoiW      = 0;
+    uint16_t    latestRoiH      = 0;
+    int         saveIndex       = 0;     // increments each second saved
 
     TimePoint   windowStart     = Clock::now();
     TimePoint   sessionStart    = Clock::now();
@@ -191,29 +204,10 @@ int main(int argc, char* argv[]) {
             uint16_t roiW = receiver.GetLastFrameWidth();
             uint16_t roiH = receiver.GetLastFrameHeight();
 
-            // ── BMP save on 10th frame ────────────────────
-            if (totalFrames == 10 && !bmpSaved) {
-                if (SaveBgraAsBmp(bmpPath, frameBuffer.data(), roiW, roiH)) {
-                    fprintf(stderr,
-                        "\n[VERIFY] Frame #%llu (Host frameId=%u) saved as '%s'\n",
-                        static_cast<unsigned long long>(totalFrames),
-                        receivedFrameId, bmpPath);
-                    fprintf(stderr,
-                        "[VERIFY] Dimensions: %dx%d, 32-bit BGRA, %zu bytes\n",
-                        roiW, roiH, frameBuffer.size());
-                    if (frameBuffer.size() >= 16) {
-                        const uint8_t* p = frameBuffer.data();
-                        fprintf(stderr, "[VERIFY] First 4 pixels (B,G,R,A): "
-                                "[%3u,%3u,%3u,%3u] [%3u,%3u,%3u,%3u] "
-                                "[%3u,%3u,%3u,%3u] [%3u,%3u,%3u,%3u]\n",
-                                p[0],p[1],p[2],p[3],
-                                p[4],p[5],p[6],p[7],
-                                p[8],p[9],p[10],p[11],
-                                p[12],p[13],p[14],p[15]);
-                    }
-                    bmpSaved = true;
-                }
-            }
+            // Keep a copy of the latest frame for per-second BMP save
+            latestFrame = frameBuffer;
+            latestRoiW  = roiW;
+            latestRoiH  = roiH;
 
             // ── Stage 2: TensorRT inference ───────────────
             if (trtReady) {
@@ -269,9 +263,17 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // ── Per-second stats report ──────────────────────
+        // ── Per-second stats & BMP save ───────────────────
         double elapsed = ToMs(Clock::now() - windowStart) / 1000.0;
         if (elapsed >= 1.0) {
+            // Save latest frame as BMP (once per second, --save only)
+            if (saveBmp && !latestFrame.empty() && latestRoiW > 0) {
+                char bmpName[64];
+                snprintf(bmpName, sizeof(bmpName), "client_%04d.bmp", saveIndex++);
+                SaveBgraAsBmp(bmpName, latestFrame.data(),
+                              latestRoiW, latestRoiH);
+            }
+
             uint64_t curPackets = receiver.GetTotalPackets();
             uint64_t curDropped = receiver.GetTotalDropped();
             uint64_t curFrames  = receiver.GetTotalFrames();
@@ -354,8 +356,7 @@ int main(int argc, char* argv[]) {
             sessionSec > 0.0
                 ? receiver.GetTotalFrames() / sessionSec
                 : 0.0);
-    fprintf(stderr, "  BMP saved:       %s\n",
-            bmpSaved ? bmpPath : "NO (did not reach frame 10)");
+    fprintf(stderr, "  BMPs saved:      %d (client_0000.bmp ...)\n", saveIndex);
     fprintf(stderr, "============================================\n");
 
     trt.Cleanup();

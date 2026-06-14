@@ -68,7 +68,7 @@ bool UdpReplySender::Initialize(const std::string& hostIp, uint16_t port) {
     }
 
     m_initialized = true;
-    fprintf(stderr, "[UdpReplySender] Ready — sending to %s:%u\n",
+    fprintf(stderr, "[UdpReplySender] Ready -- sending to %s:%u\n",
             hostIp.c_str(), port);
     return true;
 }

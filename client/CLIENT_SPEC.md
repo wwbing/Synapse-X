@@ -1,87 +1,51 @@
 # Synapse-X Client Specification
 
-> **Target audience**: Host developer.
-> Full pipeline doc: UDP recv → reassembly → LZ4 decompress → TRT inference → UDP reply.
-> Use alongside `host/HOST_SPEC.md` and `shared/ReplyPacket.h`.
+> **Status**: 已交付。全链路跑通，170 FPS 稳态，0% 丢帧。
+> **副机 IP**: 192.168.100.2 | **主机 IP**: 192.168.100.1
 
 ---
 
-## 1. System Overview
+## 1. Pipeline Overview
 
 ```
-┌── HOST ────────────────────────────────────────────────────────────┐
-│  DXGI ROI capture → LZ4 compress → fragment → UDP send (:8888)     │
-│  Also: UDP recv (:8889) ← detection results from Client            │
-└───────┬──────────────────────────────┬─────────────────────────────┘
-        │  Ethernet (direct cable)      │
-        ▼                              ▲
-┌── CLIENT ───────────────────────────────────────────────────────────┐
-│  Stage 1: UDP recv (:8888), non-blocking drain                     │
-│  Stage 2: ReassemblyBuffer (out-of-order, offset = idx × 1400)     │
-│  Stage 3: LZ4_decompress_safe → verify W×H×4                       │
-│  Stage 4: TRT inference (FP16, 416×416, ~3.5 ms)                   │
-│  Stage 5: UDP reply → Host:8889 (ReplyHeader + DetectionRaw[])     │
-└─────────────────────────────────────────────────────────────────────┘
+Host → UDP :8888 (20B PacketHeader + LZ4 chunks)
+         │
+         ▼
+  [1] UdpReceiver      0.10–0.25 ms  非阻塞排空 + 乱序重组 + LZ4 解压
+  [2] TrtInference     2.80–4.30 ms  BGRA→FP32 CHW → GPU(FP16) → detections
+  [3] UdpReplySender   < 0.01 ms     fire-and-forget UDP → Host:8889
+         │
+         ▼
+Host ← UDP :8889 (16B ReplyHeader + DetectionRaw[])
 ```
 
-### Key Numbers
-
-| Category | Parameter | Value |
-|----------|-----------|-------|
-| **Network** | Data port | UDP 8888 |
-| | Reply port | UDP 8889 |
-| | Header size | 20 bytes |
-| | Datagram max | 1420 bytes |
-| | Socket mode | Non-blocking |
-| **Decompress** | ROI | Dynamic, W×H from PacketHeader |
-| | Raw bytes | W × H × 4 |
-| | Verification | `LZ4_decompress_safe` result == W×H×4 |
-| **Inference** | Model | 1×3×416×416 FP32 CHW → 300×6 FP32 |
-| | Engine | `bf416.engine` (7.4 MB, FP16) |
-| | GPU compute | ~1.57 ms |
-| | Full infer | ~3.5 ms (preprocess + GPU + post) |
-| **Reply** | Magic | `0x5359` ('SY') |
-| | Header | 16 bytes |
-| | Per-detection | 24 bytes (f32×5 + u32) |
-| | Max packet | 1216 bytes (50 dets) |
-| **Pipeline** | Full latency | ~3.5 ms (recv + infer + reply) |
-| | Sustained FPS | 170 (under 5.88 ms budget) |
+**全链路 ~3.0–4.5 ms**，170 FPS 预算 5.88 ms 内，余量充足。
 
 ---
 
-## 2. File Map
+## 2. Files
 
 ```
 client/
-├── CLIENT_SPEC.md               ← this file
-├── CMakeLists.txt               ← LZ4 + CUDA 13.1 + TRT 10.16 + ws2_32
-├── CMakePresets.json            ← VS 2026 x64 preset
+├── CMakeLists.txt              LZ4 + CUDA 13.1 + TRT 10.16 + ws2_32
+├── CMakePresets.json           VS 2026 x64
 ├── model/
-│   ├── bf416.onnx               ← portable model (9.3 MB)
-│   └── bf416.engine             ← compiled engine (7.4 MB, GPU-bound)
+│   ├── bf416.onnx              通用 ONNX (9.3 MB)
+│   └── bf416.engine            编译后引擎 (7.4 MB, GPU/TRT 版本绑定)
 ├── include/
-│   ├── ReassemblyBuffer.h       ← reassembly engine (struct, ~140 lines)
-│   ├── UdpReceiver.h            ← UDP recv + LZ4 decompress
-│   ├── TrtInference.h           ← TRT inference wrapper
-│   └── UdpReplySender.h         ← reply channel
+│   ├── ReassemblyBuffer.h      乱序重组引擎 (header-only struct)
+│   ├── UdpReceiver.h           收包 + 解压
+│   ├── TrtInference.h          TRT 推理封装
+│   └── UdpReplySender.h        回复通道
 └── src/
-    ├── UdpReceiver.cpp          ← recvfrom drain + reassemble + decompress
-    ├── TrtInference.cpp         ← engine load + pre/infer/post
-    ├── UdpReplySender.cpp       ← pack reply + sendto(Host:8889)
-    └── main.cpp                 ← full pipeline + stats + BMP
-shared/
-├── include/
-│   ├── PacketHeader.h           ← Host→Client protocol (20 bytes)
-│   └── ReplyPacket.h            ← Client→Host protocol (16 + N×24 bytes)
-```
+    ├── UdpReceiver.cpp
+    ├── TrtInference.cpp
+    ├── UdpReplySender.cpp
+    └── main.cpp                主循环 + 统计 + BMP
 
-### Dependency Graph
-
-```
-main.cpp
-  ├── UdpReceiver.h ─── ReassemblyBuffer.h ─── PacketHeader.h
-  ├── TrtInference.h ─── (CUDA + TensorRT SDK)
-  └── UdpReplySender.h ─── ReplyPacket.h ─── TrtInference.h (Detection)
+shared/include/
+├── PacketHeader.h              20B Host→Client 协议
+└── ReplyPacket.h               16B Client→Host 协议
 ```
 
 ---
@@ -93,188 +57,112 @@ cd client
 cmake --preset windows-x64
 cmake --build build_x64 --config RelWithDebInfo
 
-# Run (all defaults):
-.\build_x64\RelWithDebInfo\SynapseX_Client.exe
-
-# Explicit:
-.\SynapseX_Client.exe [port=8888] [engine=../../model/bf416.engine] [hostIp=192.168.100.1]
-```
-
-**DLL PATH requirement:**
-```powershell
+# 确保 DLL 在 PATH：
 set "PATH=C:\Program Files\NVIDIA\TensorRT-10.16.1.11...\bin;%PATH%"
 set "PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1\bin;%PATH%"
+
+# 默认启动（推理 + 回复，不存图）：
+.\build_x64\RelWithDebInfo\SynapseX_Client.exe
+
+# 开启 BMP 存图：
+.\build_x64\RelWithDebInfo\SynapseX_Client.exe 8888 ../../model/bf416.engine 192.168.100.1 --save
 ```
 
 ---
 
-## 4. ReassemblyBuffer (Stage 1–2)
+## 4. Protocol Summary
 
-See `HOST_SPEC.md` §3 for the algorithm. Client implements it exactly:
+### Host → Client (data, port 8888)
 
-- **Chunk offset**: `chunkIndex × 1400` — direct `memcpy`, zero heap
-- **Frame switch**: `frameId > expected` → discard old frame immediately
-- **Duplicate**: `receivedMask[chunkIndex]` bitmask, O(1) check
-- **Dynamic ROI**: `frameWidth`/`frameHeight` from PacketHeader → carried to decompress
-- **Pre-allocation**: 67 MB worst-case (4096²), steady-state zero allocation
+```
+PacketHeader 20B: magic(2) frameId(4) totalChunks(2) chunkIdx(2)
+                  totalSize(4) payloadSize(2) width(2) height(2)
+                  + LZ4 payload ≤1400B
+```
+
+### Client → Host (reply, port 8889)
+
+```
+ReplyHeader 16B: magic(0x5359) frameId(4) numDets(2) padding(8)
+                 + DetectionRaw[]. N×24B:
+                   x1 y1 x2 y2 conf(f32) classId(u32)
+```
+
+坐标在 416×416 模型像素空间。Host 用 `roiOffset + det` 映射到屏幕。
 
 ---
 
-## 5. UdpReceiver (Stage 3)
+## 5. Key Performance
 
-- `recvfrom()` in non-blocking loop until `WSAEWOULDBLOCK`
-- Validates magic `0x5358`, checks truncation, extracts 20-byte header
-- Calls `LZ4_decompress_safe` → verifies output == W×H×4
-- `m_decompressBuf` resized lazily, reused across frames
-- Records `m_lastFrameWidth`/`m_lastFrameHeight` for caller
-
-### API
-```cpp
-bool TryReceive(vector<uint8_t>& outFrame, uint32_t& outFrameId);
-uint16_t GetLastFrameWidth() const;
-uint16_t GetLastFrameHeight() const;
-uint64_t GetTotalFrames/Dropped/Packets/Bytes() const;
-```
+| 指标 | 值 |
+|------|-----|
+| 网络收包 + 重组 + 解压 | 0.10–0.25 ms |
+| TRT 预处理 + GPU 推理 + 后处理 | 2.80–4.30 ms |
+| 全链路总延迟 | 3.0–4.5 ms |
+| 丢帧率（稳态） | 0% |
+| GPU 计算 (trtexec) | ~1.57 ms |
+| 网络吞吐 | ~3.4 MB/s @ 170 FPS |
 
 ---
 
-## 6. TrtInference (Stage 4)
+## 6. 已交付内容
 
-### Preprocess: BGRA → FP32 CHW RGB [0,1]
-```
-R = bgra[src+2] / 255.0f    // B→R swap
-G = bgra[src+1] / 255.0f
-B = bgra[src+0] / 255.0f    // R→B swap
-Output layout: float[3][H][W] CHW
-```
-
-### GPU Inference
-`cudaMemcpy H→D → enqueueV3 → cudaMemcpy D→H`
-
-### Postprocess
-Threshold filter + clamp to `[0, modelW-1] × [0, modelH-1]`. **NO coordinate scaling** — coords stay in model pixel space.
-
-### API
-```cpp
-bool Initialize(enginePath, modelW=416, modelH=416, numDets=300);
-vector<Detection> Infer(const uint8_t* bgra, float confThr=0.25f);
-int GetModelWidth/Height() const;
-
-struct Detection {
-    float x1, y1, x2, y2;   // model pixel coords
-    float confidence;
-    int   classId;           // 0=enemy, 1=teammate
-};
-```
+| 模块 | 状态 |
+|------|------|
+| UDP 非阻塞收包 + 乱序重组引擎 | 完成 |
+| LZ4 raw block 解压 + 动态 ROI 校验 | 完成 |
+| TensorRT FP16 推理 (bf416.engine) | 完成 |
+| BGRA→FP32 CHW RGB 预处理 | 完成 |
+| Client→Host 检测结果回复通道 (UDP 8889) | 完成 |
+| 每秒统计 (FPS / 丢帧 / 延迟 / 推理数) | 完成 |
+| `--save` 参数控制每秒 BMP 存图 | 完成 |
+| CUDA 13.1 + TRT 10.16 CMake 自动寻址 | 完成 |
+| `CLIENT_SPEC.md` + `HOST_REPLY_TASK.md` 文档 | 完成 |
 
 ---
 
-## 7. UdpReplySender (Stage 5)
+## 7. 当前问题
 
-Packs inference results and sends to Host over UDP.
-
-### Wire format
-
-```
-┌──────────────┬────────────────────────────────┐
-│ ReplyHeader  │     DetectionRaw[]              │
-│   16 bytes   │   numDets × 24 bytes             │
-└──────────────┴────────────────────────────────┘
-
-ReplyHeader (16 bytes, packed):
-  ┌────────┬────────┬────────┬────────────┐
-  │ magic  │frameId │numDets │  padding   │
-  │  2B    │  4B    │  2B    │    8B      │
-  └────────┴────────┴────────┴────────────┘
-  magic:   0x5359 ('SY')
-
-DetectionRaw (24 bytes, packed):
-  ┌───────┬───────┬───────┬───────┬───────┬───────┐
-  │  x1   │  y1   │  x2   │  y2   │ conf  │classId│
-  │  f32  │  f32  │  f32  │  f32  │  f32  │  u32  │
-  └───────┴───────┴───────┴───────┴───────┴───────┘
-```
-
-All fields little-endian (native x64). Max 50 detections per reply.
-For 6 detections: 16 + 144 = 160 bytes.
-
-### Behavior
-- Non-blocking UDP socket (`FIONBIO`), fire-and-forget
-- Sends reply only if detections are non-empty
-- Target: Host IP, port 8889 (configurable)
-- Silent on `WSAEWOULDBLOCK` (no error print)
+| 问题 | 严重度 | 说明 |
+|------|--------|------|
+| CPU 预处理瓶颈 | 中 | BGRA→FP32 在 CPU 上做双重循环 `/255.0f`，占推理延迟大头 (~2 ms)。416² 还好，更大模型会更明显 |
+| `enqueueV3` default stream | 低 | TensorRT 警告用默认 CUDA stream，隐含额外 `cudaStreamSynchronize`。不影响正确性，轻微影响性能 |
+| 无帧超时丢弃 | 低 | 如果 Host 停止发帧，Client 会永远卡在当前不完全帧上（直到新 frameId 到达）。生产环境应加 12ms 超时 |
+| 解压缓冲区 67 MB 预分配 | 低 | 为 4096² 最坏情况分配，416² 只用 ~700 KB。内存浪费 |
+| 推理与收包同线程 | 中 | `TryReceive` 和 `Infer` 串行。如果 GPU 推理时间波动，会影响收包及时性。应分离线程 |
+| 回复通道无重试 | 低 | `sendto` 失败只打日志，无重试。UDP 丢回复则 Host 收不到 |
+| 坐标无去重/平滑 | 中 | 连续帧的检测结果完全独立，帧间检测框可能抖动。建议加 IoU 跟踪或 EMA 平滑 |
 
 ---
 
-## 8. Stats Output
+## 8. 未来优化方向
 
-```
----- per-second stats --------------------------------
-  ROI: 416x416  |  FPS:   170.0  |  frames:   170  |  dropped:     0  |  drop rate:   0.0%
-  recv:   0.12 ms  |  infer:   3.52 ms  |  total:   3.64 ms  |  inference:   170/s  |  throughput:   3.45 MB/s
-```
+### 高优先级
+- **预处理搬上 GPU**：用 CUDA kernel 做 BGRA→FP32 CHW，省掉 CPU 上的 416×416 双重循环，预计推理总延迟降到 ~2 ms
+- **推理线程分离**：将 `Infer` 移到独立线程，主线程继续收包不等待 GPU，避免背压
+- **CUDA stream 复用**：给 `enqueueV3` 传非默认 stream，消除 TensorRT 的 sync warning
 
-| Field | Meaning |
-|-------|---------|
-| `recv` | UDP drain + reassembly + LZ4 decompress average (ms) |
-| `infer` | Preprocess + GPU inference + postprocess average (ms) |
-| `total` | recv + infer (ms) |
-| `inference` | Infer() calls completed per second |
+### 中优先级
+- **帧超时**：给 ReassemblyBuffer 加 12ms 超时，避免 Host 停止时卡死
+- **预分配按需调整**：根据实际 ROI 尺寸调整预分配，减少 67 MB 常驻内存
+- **坐标跟踪平滑**：对检测结果做帧间 IoU 匹配 + 指数平滑，减少抖动
+- **多模型支持**：允许运行时指定 engine 路径和模型尺寸，而非编译期硬编码 416
 
-Detection print every 30 frames:
-```
-[INFER] Frame #30: 6 detections
-  [enemy] conf=0.84 box=[307,36,325,87]
-  [enemy] conf=0.72 box=[131,281,143,311]
-```
+### 低优先级
+- **丢帧策略**：GPU 跟不上时主动丢帧（只处理最新帧），而不是积压
+- **回复压缩**：连续帧无检测时不发回复（当前已有：空检测不回复）
+- **CUDA Graph**：用 CUDA Graph 固定前处理+推理+后处理的 GPU 执行图，降低 launch 开销
 
 ---
 
-## 9. Verification
-
-- **Frame #10**: saved as `client_test.bmp` (32-bit BGRA, top-down DIB)
-- **First 4 pixels** printed for manual check against `test_roi.bmp`
-- **Drop detection**: Type A (abandoned partial frame) + Type B (frameId gap)
-- **ROI mismatch**: one-time warning if Host sends non-416×416
-
----
-
-## 10. Troubleshooting
-
-| Symptom | Check |
-|---------|-------|
-| No output at all | TRT/CUDA DLLs in PATH? Run with no engine param first |
-| `Error Code 3` | Fixed in latest build (setInput/OutputTensorAddress) |
-| `drop rate > 0%` | Socket buffer, cable quality, host sendto errors |
-| `LZ4_decompress_safe ERROR` | Corrupted payload, bit-flip |
-| `enqueueV3 FAILED` | GPU out of memory or bad engine, rebuild with trtexec |
-| `ROI mismatch` warning | Host must send 416×416, or rebuild engine at new size |
-| Reply not received | Host must listen on UDP 8889, parse `ReplyHeader` |
-
----
-
-## 11. Quick Reference
+## 9. 速查
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                 Synapse-X CLIENT — Quick Reference                │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  BUILD:    cd client && cmake --preset windows-x64                │
-│            cmake --build build_x64 --config RelWithDebInfo        │
-│                                                                   │
-│  RUN:      .\build_x64\RelWithDebInfo\SynapseX_Client.exe         │
-│              [port=8888] [engine=../../model/bf416.engine]        │
-│              [hostIp=192.168.100.1]                               │
-│                                                                   │
-│  DATA IN:  UDP :8888, 20-byte PacketHeader, magic=0x5358          │
-│  REPLY OUT:UDP :8889, 16-byte ReplyHeader, magic=0x5359           │
-│                                                                   │
-│  MODEL:    416×416 FP16 TRT engine                                │
-│  COORDS:   model pixel space [0,415], Host maps to screen        │
-│                                                                   │
-│  LATENCY:  ~3.5 ms total (recv + infer + reply)                  │
-│  FPS:      170 sustained (budget 5.88 ms)                        │
-│                                                                   │
-└──────────────────────────────────────────────────────────────────┘
+BUILD:  cd client && cmake --preset windows-x64 && cmake --build build_x64 --config RelWithDebInfo
+RUN:    .\build_x64\RelWithDebInfo\SynapseX_Client.exe [port] [engine] [hostIp] [--save]
+DATA:   UDP :8888 ← Host (20B header, LZ4 chunks)
+REPLY:  UDP :8889 → Host (16B header, DetectionRaw[])
+MODEL:  416×416 FP16, bf416.engine
+DELAY:  ~3.5 ms total
+FPS:    170 sustained, 0% drop
 ```
