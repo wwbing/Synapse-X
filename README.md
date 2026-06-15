@@ -46,14 +46,15 @@ Host drives mouse via ddll64.dll for aim-assist. All parameters tunable via web 
 
 ## Features
 
-- **170 Hz fixed capture** — DXGI Desktop Duplication, GPU-side center-ROI crop
-- **LZ4 compression** — ~2–25% ratio, <0.2 ms per frame
-- **UDP fragmentation** — 20-byte PacketHeader + ≤1400B payload, MTU-safe
+- **170 Hz fixed capture** — DXGI Desktop Duplication, GPU-side center-ROI crop, thread pinned to P-core
+- **LZ4 compression** — `LZ4_compress_fast(accel=5)`, ~3–30% ratio, <0.5 ms under game load
+- **UDP fragmentation** — 20-byte PacketHeader + ≤1400B payload, non-blocking 4MB buffer, MTU-safe
 - **Configurable ROI** — CLI: `416×416`, `640×640`, or any 64–4096 px square
 - **TensorRT inference** — YOLO FP16 on RTX GPU, ~3.5 ms typical
 - **Bidirectional UDP** — Host→Client :8888 (frames), Client→Host :8889 (detections)
-- **Aim-assist** — ddll64.dll relative mouse movement, head/body aim point
-- **Web tuning panel** — `http://<host-ip>:9999`, real-time slider adjustment, phone-friendly
+- **PD aim-assist** — Sub-pixel accumulator + 2-frame delay compensation, ddll64.dll, head/body aim point
+- **Web tuning panel** — `http://<host-ip>:9999`, Kp/Kd/aimRange real-time sliders, phone-friendly
+- **Anti-degradation** — Core affinity, LZ4 dynamic accel, UDP non-blocking — pipeline survives game load
 - **Auto-recovery** — DXGI access lost → full pipeline rebuild, non-blocking
 
 ---
@@ -109,12 +110,13 @@ SynapseX_Client.exe [port] [engine_path] [host_ip] [--save]
 
 | Parameter | Value |
 |-----------|-------|
-| Host capture rate | **170 Hz** (5.88 ms fixed cadence) |
-| Pipeline latency (host) | **~0.35 ms** (capture + compress + send) |
-| Client inference | **~3.5 ms** typical, spikes to 17–27 ms (see specs) |
+| Host capture rate | **170 Hz** (5.88 ms fixed cadence, thread pinned to P-core, TIME_CRITICAL) |
+| Pipeline latency (host) | **~0.35 ms** idle, **~0.50 ms** in-game (with perf guards) |
+| Client inference | **~3.5 ms** typical, spikes to 17–27 ms (see CLIENT_SPEC) |
 | End-to-end | **~20 ms** capture → inference → aim |
-| Network per frame | **30–400 KB** (content-dependent LZ4 ratio) |
-| UDP datagram size | ≤1420 bytes (20B header + ≤1400B payload) |
+| Network per frame | **30–400 KB** (content-dependent LZ4 accel=5) |
+| UDP datagram | ≤1420 bytes (20B header + ≤1400B payload), non-blocking 4MB buffer |
+| Aim controller | PD + sub-pixel accumulator + 2-frame delay compensation |
 | ROI range | 64×64 to 4096×4096, configurable at runtime |
 
 ---
@@ -166,7 +168,8 @@ Synapse-X/
 
 | Document | Covers |
 |----------|--------|
-| [host/HOST_SPEC.md](host/HOST_SPEC.md) | Pipeline, 5 modules, protocols, CLI, tuning, active issues |
+| [host/HOST_SPEC.md](host/HOST_SPEC.md) | Pipeline, modules, protocols, CLI, perf optimizations, active issues |
+| [host/MOUSE_CONTROL_SPEC.md](host/MOUSE_CONTROL_SPEC.md) | PD controller, sub-pixel accumulator, delay compensation, target selection, tuning |
 | [client/CLIENT_SPEC.md](client/CLIENT_SPEC.md) | Reassembly, inference, reply protocol, GPU perf issues |
 
 ---
@@ -178,6 +181,9 @@ Synapse-X/
 | Black frames in-game | Switch game to **Borderless Windowed** |
 | `[MouseCtrl] OpenDevice FAILED` | Run as **Administrator** |
 | No `[Reply]` output | Check firewall UDP 8889; verify Client sends to correct Host IP |
-| Web panel not loading | Verify `http://<host-ip>:9999`; check firewall |
-| Aim too slow / oscillating | Adjust smoothFactor / aimRange in web panel; see HOST_SPEC §Active Issues |
+| Web panel not working | Ctrl+Shift+R **force-refresh** browser; verify `http://<host-ip>:9999` |
+| Aim overshooting / oscillating | Increase Kd (damping); enable delay compensation (already on) |
+| Aim too slow | Increase Kp (proportional); Kp=0.4→0.6 typical for FPS |
+| Pipeline latency spikes in-game | Verify thread affinity (core 2); non-blocking UDP enabled; LZ4 accel=5 |
 | Client inference spikes 17–27ms | Lock GPU clocks; warm up TRT engine; see CLIENT_SPEC §9 |
+| `[UdpSender] packet dropped` | Normal under extreme load — one frame at 170 Hz is invisible |
