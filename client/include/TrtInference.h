@@ -48,11 +48,12 @@ public:
                     int modelHeight = 416,
                     int numDetections = 300);
 
-    // Run inference on BGRA uint8 input.
-    // bgra:    pointer to BGRA pixel data (modelWidth × modelHeight × 4 bytes)
-    // confThr: minimum confidence threshold for detections
-    // Returns detections in model pixel coordinates — no scaling applied.
-    // The caller (Host via reply) knows the ROI size and can scale if needed.
+    // Create dedicated CUDA stream. Must be called from the thread that
+    // will call Infer(), after cudaSetDevice().
+    bool SetupStream();
+
+    // Run inference on BGRA uint8 input using the dedicated CUDA stream.
+    // Call from a SINGLE dedicated thread after SetupStream().
     std::vector<Detection> Infer(const uint8_t* bgra,
                                  float confThr = 0.25f);
 
@@ -74,10 +75,11 @@ private:
     void* m_engine    = nullptr;  // nvinfer1::ICudaEngine*
     void* m_context   = nullptr;  // nvinfer1::IExecutionContext*
 
-    // GPU buffers
-    void* m_dInput    = nullptr;  // input tensor (FP32 CHW)
-    void* m_dOutput   = nullptr;  // output tensor (FP32)
+    // GPU buffers + stream
+    void*  m_dInput    = nullptr;  // input tensor (FP32 CHW)
+    void*  m_dOutput   = nullptr;  // output tensor (FP32)
     size_t m_outputBytes = 0;
+    void*  m_stream    = nullptr;  // cudaStream_t
 };
 
 } // namespace SynapseX

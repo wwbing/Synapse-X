@@ -161,6 +161,26 @@ bool TrtInference::Initialize(const std::string& enginePath,
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  SetupStream — create dedicated CUDA stream
+// ═══════════════════════════════════════════════════════════════
+
+bool TrtInference::SetupStream() {
+    if (!m_initialized) return false;
+    if (m_stream) return true;  // already created
+
+    cudaError_t err = cudaStreamCreateWithFlags(
+        reinterpret_cast<cudaStream_t*>(&m_stream),
+        cudaStreamNonBlocking);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[TrtInference] cudaStreamCreate FAILED: %s\n",
+                cudaGetErrorString(err));
+        return false;
+    }
+    fprintf(stderr, "[TrtInference] CUDA stream created (non-blocking).\n");
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Infer (hot path)
 // ═══════════════════════════════════════════════════════════════
 
@@ -192,13 +212,15 @@ std::vector<Detection> TrtInference::Infer(
                input.size() * sizeof(float),
                cudaMemcpyHostToDevice);
 
-    // ── 3. Enqueue inference ──────────────────────────────
+    // ── 3. Enqueue inference (dedicated CUDA stream) ───────
     auto* ctx = static_cast<nvinfer1::IExecutionContext*>(m_context);
-    bool ok = ctx->enqueueV3(nullptr);
+    auto* stream = reinterpret_cast<cudaStream_t>(m_stream);
+    bool ok = ctx->enqueueV3(stream);
     if (!ok) {
         fprintf(stderr, "[TrtInference] enqueueV3 FAILED\n");
         return detections;
     }
+    cudaStreamSynchronize(stream);
 
     // ── 4. Copy output back to CPU ────────────────────────
     std::vector<float> output(m_outputBytes / sizeof(float));
@@ -231,6 +253,10 @@ std::vector<Detection> TrtInference::Infer(
 // ═══════════════════════════════════════════════════════════════
 
 void TrtInference::Cleanup() {
+    if (m_stream) {
+        cudaStreamDestroy(reinterpret_cast<cudaStream_t>(m_stream));
+        m_stream = nullptr;
+    }
     if (m_dInput)  { cudaFree(m_dInput);  m_dInput  = nullptr; }
     if (m_dOutput) { cudaFree(m_dOutput); m_dOutput = nullptr; }
 
