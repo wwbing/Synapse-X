@@ -200,8 +200,8 @@ Client's inference pipeline fed with a steady stream.
 
 | # | Symptom | Suspected Cause | Fix Direction |
 |---|---------|-----------------|---------------|
-| A1 | **Aim oscillation** — cursor vibrates around target, never settles | `dx * 0.15` exponential decay asymptotically approaches but never reaches zero. At close range (<5px) the 1px minimum step causes overshoot-backtrack cycles. | Dead zone: stop moving when `dist < 3px`. Or dynamic smoothFactor that increases at close range for a "snap" effect. |
-| A2 | **Aim too slow** — takes many frames to reach target | 15% per frame means ~15 frames (88ms) to cover 90% of distance. In a fast-paced game this feels sluggish. | Add acceleration curve: faster initial movement, decelerate near target. Or make smoothFactor configurable per distance bracket (far=0.4, mid=0.2, close=0.1). |
+| A1 | ~~**Aim oscillation**~~ **FIXED** — PD controller + 3px deadzone | Exponential decay had no damping; now D-term provides braking force. Deadzone stops all movement within 3px. | ✅ |
+| A2 | ~~**Aim too slow**~~ **FIXED** — P-term provides proportional pull | Old 15%/frame was sluggish at distance. Kp=0.4 gives immediate proportional response; far targets move fast, close targets move slow naturally. | ✅ |
 | A3 | **Target switching** — jumps between enemies when confidence values flicker | Best-target selection is purely per-frame: `max(confidence)` with distance tie-break. A slightly higher-confidence detection on the next frame causes an instant switch. | Target lock: once a target is selected, require N consecutive frames of a *better* candidate before switching. Or hysteresis: new target must beat current by a margin (e.g. 0.1 confidence or 50px closer). |
 | A4 | **Lock not tight** — crosshair drifts off target during movement | No movement prediction. Target moves between frames but aim always aims at the *previous* frame's position. | Velocity estimation (EMA of position deltas across frames) + lead the target by `velocity * inference_latency`. |
 

@@ -1,29 +1,37 @@
 #pragma once
 
-// ── Mouse control via ddll64.dll ──────────────────────────────
-// Loads the DLL at runtime, calls MoveR for relative mouse movement.
-// Used for aim-assist: when Client returns detections, the Host
-// smoothly moves the crosshair toward the best target.
+// ── PD-Controller with Sub-pixel Accumulation & Delay Compensation ─
 //
-// DLL API:
-//   int  OpenDevice()                          — init mouse device
-//   void MoveR(int dx, int dy)                 — relative move (pixels)
+// Problem: In FPS games, MoveR(dx,dy) rotates the camera, not the cursor.
+// The visual pipeline (capture → network → inference → reply → aim)
+// has 1–2 frames of latency. The PD controller sees "old" error,
+// re-applies thrust, and overshoots.
+//
+// Solution:
+//   1. Delay Compensation: subtract known in-flight MoveR amounts from
+//      the visual error before PD computation. Prevents double-counting.
+//   2. Sub-pixel Accumulator: accumulate fractional PD output.
+//      Only emit MoveR when |accumulator| ≥ 1.0. No forced ±1, no dE gate.
+//      Smooth tracking even at 1px-per-multiple-frames speeds.
+//
+//   Output = Kp * realError  +  Kd * (realError - prevError)
+//
+//   realError = visualError - sum(sentMoves in last 2 frames)
 
 #include <windows.h>
+#include <chrono>
 #include <cstdint>
 #include <cmath>
 
 namespace SynapseX {
 
-// ── Aim configuration (tune per game) ────────────────────────
 struct AimConfig {
-    float smoothFactor  = 0.15f;   // fraction of distance to move per frame (0-1)
-    float aimRange      = 500.0f;  // max px from screen center to engage
-    float sensitivity   = 1.0f;    // game sensitivity multiplier
-    float minConfidence = 0.25f;   // ignore detections below this confidence
-    int   aimPoint      = 0;       // 0 = body (bbox center), 1 = head (top portion)
-    float headOffset    = 0.12f;   // when aimPoint=1, aim at top `headOffset` of bbox
-                                   //   (0.10 = top 10%, 0.15 = top 15%)
+    float Kp              = 0.40f;   // Proportional gain
+    float Kd              = 0.05f;   // Derivative gain (velocity damping)
+    float aimRange        = 500.0f;  // max px from screen center to engage
+    float minConfidence   = 0.25f;   // ignore detections below this
+    int   aimPoint        = 0;       // 0 = body (center), 1 = head (top)
+    float headOffset      = 0.12f;   // head aim: top fraction of bbox
 };
 
 class MouseController {
@@ -34,37 +42,29 @@ public:
     MouseController(const MouseController&) = delete;
     MouseController& operator=(const MouseController&) = delete;
 
-    // Load ddll64.dll from `dllPath` and call OpenDevice.
-    // dllPath: relative to exe dir, or absolute path.
-    // Returns true on success.
+    // ── DLL lifecycle ──────────────────────────────────────
     bool Load(const char* dllPath);
-
-    // Release DLL. Called automatically by destructor.
     void Unload();
-
     bool IsLoaded() const { return m_loaded; }
 
-    // ── Low-level move ──────────────────────────────────────
-
-    // Move the mouse by (dx, dy) pixels relative to current position.
-    // dx > 0 = right, dy > 0 = down.
+    // ── Low-level relative move ────────────────────────────
     void MoveRelative(int dx, int dy);
 
-    // ── Aim-assist (high-level) ─────────────────────────────
-
-    // Given screen-space detection coordinates and screen dimensions,
-    // calculate and execute a smooth relative mouse move toward
-    // the target center. Uses AimConfig for smoothing parameters.
+    // ── PD-controller aim (hot path, 170 Hz) ───────────────
     //
-    // Returns true if a move was executed (target in range, above confidence).
-    bool AimAtTarget(float targetScreenX, float targetScreenY,
+    // dx, dy = visual error: targetCenter − screenCenter (px)
+    // Returns true if a mouse move was emitted.
+    bool AimAtTarget(float dx, float dy,
                      float confidence,
                      int screenW, int screenH,
                      const AimConfig& cfg = AimConfig{});
 
-    // ── Aim tuning ──────────────────────────────────────────
-    void SetConfig(const AimConfig& cfg) { m_config = cfg; }
-    const AimConfig& GetConfig() const { return m_config; }
+    // ── Config ────────────────────────────────────────────
+    void SetConfig(const AimConfig& cfg) { m_cfg = cfg; }
+    const AimConfig& GetConfig() const { return m_cfg; }
+
+    // ── State reset (target lost, deadzone, re-acquire) ───
+    void ResetPDState();
 
 private:
     HINSTANCE m_dll    = nullptr;
@@ -73,7 +73,32 @@ private:
     using MoveRFn = void (*)(int, int);
     MoveRFn m_moveR = nullptr;
 
-    AimConfig m_config;
+    AimConfig m_cfg;
+
+    // ── PD state ───────────────────────────────────────────
+    using Clock     = std::chrono::high_resolution_clock;
+    using TimePoint = Clock::time_point;
+
+    float     m_prevErrorX  = 0.0f;
+    float     m_prevErrorY  = 0.0f;
+    TimePoint m_lastTime;
+    bool      m_hasLastTime = false;
+
+    // ── Sub-pixel accumulator ──────────────────────────────
+    // Accumulates fractional PD output. Only when |residual| ≥ 1.0
+    // do we extract the integer part and call MoveR.
+    float     m_residualX   = 0.0f;
+    float     m_residualY   = 0.0f;
+
+    // ── Delay compensation ring buffer ─────────────────────
+    // Stores the last N frames of actual MoveR values sent.
+    // Visual error is compensated by subtracting the sum of
+    // in-flight movements that haven't appeared in the frame yet.
+    static constexpr int kDelayFrames = 2;
+    struct SentMove { int dx; int dy; };
+    SentMove  m_sentHistory[kDelayFrames] = {};
+    int       m_sentWriteIdx = 0;
+    int       m_sentCount    = 0;  // valid entries (0..kDelayFrames)
 };
 
 } // namespace SynapseX

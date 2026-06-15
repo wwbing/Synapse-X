@@ -276,12 +276,14 @@ int main(int argc, char* argv[]) {
                         float targetCx = (best->x1 + best->x2) * 0.5f;
                         float targetCy;
                         if (aimCfg.aimPoint == 1) {
-                            // Head: top `headOffset` of bbox
                             targetCy = best->y1 + bboxH * aimCfg.headOffset;
                         } else {
-                            // Body: bbox center (default)
                             targetCy = (best->y1 + best->y2) * 0.5f;
                         }
+
+                        // Compute error vector from screen center
+                        float dx = targetCx - static_cast<float>(screenW) * 0.5f;
+                        float dy = targetCy - static_cast<float>(screenH) * 0.5f;
 
                         // Update web panel target info
                         tuner.UpdateTarget(targetCx, targetCy,
@@ -291,7 +293,7 @@ int main(int argc, char* argv[]) {
                         mouse.SetConfig(aimCfg);
 
                         if (tuner.IsAimEnabled() &&
-                            mouse.AimAtTarget(targetCx, targetCy,
+                            mouse.AimAtTarget(dx, dy,
                                               best->confidence,
                                               screenW, screenH, aimCfg)) {
                             // Throttled log: ~every 180ms
