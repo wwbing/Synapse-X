@@ -74,17 +74,27 @@ static const char kHtmlPage[] = R"html(<!DOCTYPE html>
   <!-- Aim Config -->
   <div class="card">
     <h2>Aim Parameters</h2>
-    <label>Smooth Factor <span class="val" id="vSmooth">0.15</span></label>
-    <input type="range" id="smoothFactor" min="0.01" max="1.00" step="0.01" value="0.15">
+    <label>Kp (Proportional) <span class="val" id="vKp">0.40</span></label>
+    <input type="range" id="Kp" min="0.05" max="1.50" step="0.01" value="0.40">
 
-    <label>Aim Range <span class="val" id="vRange">500</span></label>
+    <label>Kd (Damping) <span class="val" id="vKd">0.05</span></label>
+    <input type="range" id="Kd" min="0.00" max="0.50" step="0.01" value="0.05">
+
+    <label>Aim Range <span class="val" id="vaimRange">500</span></label>
     <input type="range" id="aimRange" min="50" max="1000" step="10" value="500">
 
-    <label>Sensitivity <span class="val" id="vSens">1.00</span></label>
-    <input type="range" id="sensitivity" min="0.1" max="5.0" step="0.1" value="1.0">
-
-    <label>Min Confidence <span class="val" id="vConf">0.25</span></label>
+    <label>Min Confidence <span class="val" id="vminConfidence">0.25</span></label>
     <input type="range" id="minConfidence" min="0.0" max="1.0" step="0.01" value="0.25">
+
+    <label>Aim Point <span class="val" id="vaimPoint">Body</span></label>
+    <select id="aimPoint" style="width:100%;padding:6px;background:var(--bg);color:var(--text);
+      border:1px solid var(--border);border-radius:4px;margin-bottom:12px;font-size:14px;">
+      <option value="0">Body (bbox center)</option>
+      <option value="1">Head (top of bbox)</option>
+    </select>
+
+    <label>Head Offset <span class="val" id="vheadOffset">0.12</span></label>
+    <input type="range" id="headOffset" min="0.05" max="0.25" step="0.01" value="0.12">
 
     <div class="toggle">
       <span>Aim Enabled</span>
@@ -114,33 +124,46 @@ const HOST = location.origin;
 function $(id) { return document.getElementById(id); }
 
 // ── Sliders → POST config ──────────────────────────────
-['smoothFactor','aimRange','sensitivity','minConfidence'].forEach(id => {
+['Kp','Kd','aimRange','minConfidence','headOffset'].forEach(id => {
   $(id).addEventListener('input', () => {
-    $('v'+id.charAt(0).toUpperCase()+id.slice(1)).textContent = $(id).value;
+    let v = $(id).value;
+    if (id==='aimRange') v = parseInt(v);
+    if (id==='Kd') v = parseFloat(v).toFixed(2);
+    $('v'+id).textContent = v;
     postConfig();
   });
 });
 $('aimEnabled').addEventListener('change', postConfig);
+$('aimPoint').addEventListener('change', function() {
+  $('vaimPoint').textContent = this.value==='1' ? 'Head' : 'Body';
+  postConfig();
+});
 
 function getConfig() {
   return {
-    smoothFactor:  parseFloat($('smoothFactor').value),
+    Kp:            parseFloat($('Kp').value),
+    Kd:            parseFloat($('Kd').value),
     aimRange:      parseInt($('aimRange').value),
-    sensitivity:   parseFloat($('sensitivity').value),
     minConfidence: parseFloat($('minConfidence').value),
+    aimPoint:      parseInt($('aimPoint').value),
+    headOffset:    parseFloat($('headOffset').value),
     aimEnabled:    $('aimEnabled').checked
   };
 }
 function setConfig(cfg) {
-  $('smoothFactor').value  = cfg.smoothFactor;
+  $('Kp').value            = cfg.Kp || 0.40;
+  $('Kd').value            = (cfg.Kd != null) ? cfg.Kd : 0.05;
   $('aimRange').value      = cfg.aimRange;
-  $('sensitivity').value   = cfg.sensitivity;
   $('minConfidence').value = cfg.minConfidence;
+  $('aimPoint').value      = cfg.aimPoint || 0;
+  $('headOffset').value    = cfg.headOffset || 0.12;
   $('aimEnabled').checked  = cfg.aimEnabled;
-  ['Smooth','Range','Sens','Conf'].forEach((n,i) => {
-    $('v'+n).textContent = [cfg.smoothFactor, cfg.aimRange,
-      cfg.sensitivity.toFixed(2), cfg.minConfidence][i];
-  });
+  $('vKp').textContent            = (cfg.Kp||0.40).toFixed(2);
+  $('vKd').textContent            = (cfg.Kd||0.05).toFixed(2);
+  $('vaimRange').textContent      = cfg.aimRange;
+  $('vminConfidence').textContent = cfg.minConfidence;
+  $('vaimPoint').textContent      = (cfg.aimPoint===1) ? 'Head' : 'Body';
+  $('vheadOffset').textContent    = (cfg.headOffset||0.12).toFixed(2);
 }
 function postConfig() {
   fetch(HOST+'/api/config', {
@@ -297,10 +320,12 @@ void HttpTuner::ServerThread() {
         std::string json = "{";
         // Config
         json += "\"config\":{";
-        json += jsonStr("smoothFactor",  m_state.config.smoothFactor) + ",";
+        json += jsonStr("Kp",            m_state.config.Kp) + ",";
+        json += jsonStr("Kd",            m_state.config.Kd) + ",";
         json += jsonStr("aimRange",      (int)m_state.config.aimRange) + ",";
-        json += jsonStr("sensitivity",   m_state.config.sensitivity) + ",";
         json += jsonStr("minConfidence", m_state.config.minConfidence) + ",";
+        json += jsonStr("aimPoint",      m_state.config.aimPoint) + ",";
+        json += jsonStr("headOffset",    m_state.config.headOffset) + ",";
         json += jsonStr("aimEnabled",    m_state.aimEnabled);
         json += "},";
         // Stats
@@ -332,10 +357,12 @@ void HttpTuner::ServerThread() {
 
         float f;
         bool  b;
-        if (extractFloat(body, "smoothFactor", f))  m_state.config.smoothFactor  = f;
+        if (extractFloat(body, "Kp", f))            m_state.config.Kp            = f;
+        if (extractFloat(body, "Kd", f))            m_state.config.Kd            = f;
         if (extractFloat(body, "aimRange", f))      m_state.config.aimRange      = f;
-        if (extractFloat(body, "sensitivity", f))   m_state.config.sensitivity   = f;
         if (extractFloat(body, "minConfidence", f)) m_state.config.minConfidence = f;
+        if (extractFloat(body, "headOffset", f))    m_state.config.headOffset    = f;
+        if (extractFloat(body, "aimPoint", f))      m_state.config.aimPoint      = (int)f;
         if (extractBool(body, "aimEnabled", b))     m_state.aimEnabled           = b;
 
         res.set_content("{\"ok\":true}", "application/json");

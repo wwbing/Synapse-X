@@ -194,16 +194,29 @@ Client's inference pipeline fed with a steady stream.
 
 ---
 
+## Active Issues (observed, needs fixing)
+
+### Host: Aiming Quality
+
+| # | Symptom | Suspected Cause | Fix Direction |
+|---|---------|-----------------|---------------|
+| A1 | ~~**Aim oscillation**~~ **FIXED** — PD controller + 3px deadzone | Exponential decay had no damping; now D-term provides braking force. Deadzone stops all movement within 3px. | ✅ |
+| A2 | ~~**Aim too slow**~~ **FIXED** — P-term provides proportional pull | Old 15%/frame was sluggish at distance. Kp=0.4 gives immediate proportional response; far targets move fast, close targets move slow naturally. | ✅ |
+| A3 | **Target switching** — jumps between enemies when confidence values flicker | Best-target selection is purely per-frame: `max(confidence)` with distance tie-break. A slightly higher-confidence detection on the next frame causes an instant switch. | Target lock: once a target is selected, require N consecutive frames of a *better* candidate before switching. Or hysteresis: new target must beat current by a margin (e.g. 0.1 confidence or 50px closer). |
+| A4 | **Lock not tight** — crosshair drifts off target during movement | No movement prediction. Target moves between frames but aim always aims at the *previous* frame's position. | Velocity estimation (EMA of position deltas across frames) + lead the target by `velocity * inference_latency`. |
+
+### Host: Aim Smoothing
+
+| # | Symptom | Suspected Cause | Fix Direction |
+|---|---------|-----------------|---------------|
+| B1 | **Linear decay feels robotic** | `moveX = dx * smoothFactor` produces a straight exponential curve. Human aim has micro-corrections, overshoot, and varying speed. | Add Perlin noise or sinusoidal perturbation at close range. Randomize smoothFactor slightly each frame (±10%). |
+| B2 | **No recoil compensation** | Game-specific recoil patterns are not modeled. After firing, crosshair climbs but aim-assist doesn't counteract it. | Per-game recoil table (simple array of (dx, dy) offsets per shot). Subtract from target position after each shot. |
+
+> Client-side performance issues (inference time spikes, GPU contention) are tracked in `client/CLIENT_SPEC.md`.
+
+---
+
 ## Unimplemented / Future Work
-
-### Aim Quality
-
-| Issue | Current | Ideal |
-|-------|---------|-------|
-| **Aim point** | Aims at bbox center only | Choose head (upper 20% of bbox) or body (center 60%) via config. Head = faster TTK in FPS games. |
-| **Mouse movement curve** | Simple `dx * 0.15` linear decay per frame | Human-like acceleration profile: slow start → fast middle → decelerate near target. Add micro-jitter noise for anti-detection. |
-| **Target stickiness** | Switches target every frame if confidence changes | Require N consecutive frames on the same target before switching (prevents flickering between targets). |
-| **Leading / prediction** | None | Predict target position based on velocity (Kalman filter or simple EMA of position deltas). |
 
 ### Detection & Inference
 
