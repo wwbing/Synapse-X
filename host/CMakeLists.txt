@@ -104,6 +104,14 @@ add_custom_command(TARGET SynapseX_Host POST_BUILD
     COMMENT "Copying ddll64.dll to output directory"
 )
 
+# Copy web/ to build output so HttpTuner can find index.html
+add_custom_command(TARGET SynapseX_Host POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/web"
+        "$<TARGET_FILE_DIR:SynapseX_Host>/web"
+    COMMENT "Copying web/ to output directory"
+)
+
 # ── BMP capture + LZ4 compression test ─────────────────
 add_executable(SynapseX_Host_TestBmp
     test/test_bmp.cpp

@@ -171,6 +171,10 @@ int main(int argc, char* argv[]) {
     const uint16_t roiW16 = static_cast<uint16_t>(roiW);
     const uint16_t roiH16 = static_cast<uint16_t>(roiH);
 
+    // ── EMA filter state (low-pass on bbox jitter) ──────────
+    float emaTargetX = -1.0f;  // -1 = no target locked
+    float emaTargetY = -1.0f;
+
     auto nextTick = Clock::now();
 
     // ═══════════════════════════════════════════════════════
@@ -278,45 +282,78 @@ int main(int argc, char* argv[]) {
                     }
 
                     if (best) {
-                        // Read config (may be changed via web UI)
                         auto aimCfg = tuner.GetConfig();
 
-                        // Compute aim point based on config
+                        // Compute raw aim point (pre-filter)
                         float bboxH = best->y2 - best->y1;
-                        float targetCx = (best->x1 + best->x2) * 0.5f;
-                        float targetCy;
+                        float rawCx = (best->x1 + best->x2) * 0.5f;
+                        float rawCy;
                         if (aimCfg.aimPoint == 1) {
-                            targetCy = best->y1 + bboxH * aimCfg.headOffset;
+                            rawCy = best->y1 + bboxH * aimCfg.headOffset;
                         } else {
-                            targetCy = (best->y1 + best->y2) * 0.5f;
+                            rawCy = (best->y1 + best->y2) * 0.5f;
                         }
 
-                        // Compute error vector from screen center
-                        float dx = targetCx - static_cast<float>(screenW) * 0.5f;
-                        float dy = targetCy - static_cast<float>(screenH) * 0.5f;
+                        // ── EMA low-pass filter ──────────────────
+                        // Suppresses YOLO bbox "breathing" (1-3px jitter)
+                        // before it reaches the PD controller's D-term.
+                        float alpha = aimCfg.emaAlpha;
+                        if (emaTargetX < 0.0f) {
+                            // First frame after lock — snap instantly
+                            emaTargetX = rawCx;
+                            emaTargetY = rawCy;
+                        } else {
+                            float jump = std::sqrt(
+                                (rawCx - emaTargetX) * (rawCx - emaTargetX) +
+                                (rawCy - emaTargetY) * (rawCy - emaTargetY));
+                            if (jump > 100.0f) {
+                                // Target switch detected — snap, no drag
+                                emaTargetX = rawCx;
+                                emaTargetY = rawCy;
+                            } else {
+                                // Normal EMA smoothing
+                                emaTargetX = alpha * rawCx + (1.0f - alpha) * emaTargetX;
+                                emaTargetY = alpha * rawCy + (1.0f - alpha) * emaTargetY;
+                            }
+                        }
 
-                        // Update web panel target info
-                        tuner.UpdateTarget(targetCx, targetCy,
+                        // Compute error from EMA-filtered coords
+                        float dx = emaTargetX - static_cast<float>(screenW) * 0.5f;
+                        float dy = emaTargetY - static_cast<float>(screenH) * 0.5f;
+
+                        // Update web panel with EMA'd target
+                        tuner.UpdateTarget(emaTargetX, emaTargetY,
                                            best->confidence, bestDist,
                                            static_cast<int>(best->classId));
 
                         mouse.SetConfig(aimCfg);
 
+                        // Compute raw error (pre-EMA) for scope comparison
+                        float rawDx = rawCx - static_cast<float>(screenW) * 0.5f;
+
                         if (tuner.IsAimEnabled() &&
                             mouse.AimAtTarget(dx, dy,
                                               best->confidence,
                                               screenW, screenH, aimCfg)) {
-                            // Throttled log: ~every 180ms
+                            // Push oscilloscope data: raw vs EMA vs output vs residual
+                            tuner.UpdateScope(rawDx, dx,
+                                static_cast<float>(mouse.GetLastMoveX()),
+                                mouse.GetResidualX());
+
                             static int aimCount = 0;
                             if (++aimCount % 30 == 1) {
                                 fprintf(stderr,
                                     "[Aim] tgt=%.0f,%.0f conf=%.2f dist=%.0f\n",
-                                    static_cast<double>(targetCx),
-                                    static_cast<double>(targetCy),
+                                    static_cast<double>(emaTargetX),
+                                    static_cast<double>(emaTargetY),
                                     static_cast<double>(best->confidence),
                                     static_cast<double>(bestDist));
                             }
                         }
+                    } else {
+                        // No valid target — reset EMA state
+                        emaTargetX = -1.0f;
+                        emaTargetY = -1.0f;
                     }
                 }
             }

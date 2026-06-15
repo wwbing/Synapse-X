@@ -184,6 +184,7 @@ bool MouseController::AimAtTarget(float dx, float dy,
     if (moveX != 0 || moveY != 0) {
         MoveRelative(moveX, moveY);
     }
+    m_lastMoveX = moveX;  // for oscilloscope
 
     // ── 7. Record in delay ring (for future compensation) ──
     m_sentHistory[m_sentWriteIdx] = {moveX, moveY};

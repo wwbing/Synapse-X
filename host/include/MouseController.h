@@ -32,6 +32,7 @@ struct AimConfig {
     float minConfidence   = 0.25f;   // ignore detections below this
     int   aimPoint        = 0;       // 0 = body (center), 1 = head (top)
     float headOffset      = 0.12f;   // head aim: top fraction of bbox
+    float emaAlpha        = 0.20f;   // EMA low-pass filter (0.01-1.0, 1.0=off)
 };
 
 class MouseController {
@@ -66,6 +67,10 @@ public:
     // ── State reset (target lost, deadzone, re-acquire) ───
     void ResetPDState();
 
+    // ── Scope data (for web oscilloscope) ────────────────
+    float GetResidualX() const { return m_residualX; }
+    int   GetLastMoveX() const { return m_lastMoveX; }
+
 private:
     HINSTANCE m_dll    = nullptr;
     bool      m_loaded = false;
@@ -89,6 +94,7 @@ private:
     // do we extract the integer part and call MoveR.
     float     m_residualX   = 0.0f;
     float     m_residualY   = 0.0f;
+    int       m_lastMoveX   = 0;
 
     // ── Delay compensation ring buffer ─────────────────────
     // Stores the last N frames of actual MoveR values sent.
