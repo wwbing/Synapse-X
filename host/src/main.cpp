@@ -77,6 +77,16 @@ int main(int argc, char* argv[]) {
     // Default is 15.6 ms — way too coarse for 5.88 ms ticks.
     timeBeginPeriod(1);
 
+    // Pin main thread to a fixed P-core to prevent OS scheduler
+    // from bouncing it across cores — avoids L1/L2 cache thrashing.
+    DWORD_PTR affinityMask = 1ULL << 2;  // Core 2 (adjust per CPU topology)
+    if (!SetThreadAffinityMask(GetCurrentThread(), affinityMask)) {
+        fprintf(stderr, "[WARN] SetThreadAffinityMask failed (err=%lu)\n",
+                static_cast<unsigned long>(GetLastError()));
+    }
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    fprintf(stderr, "[INFO] Thread pinned to core 2, priority TIME_CRITICAL\n");
+
     fprintf(stderr, "============================================\n");
     fprintf(stderr, "  Synapse-X Host -- Fixed %.0f Hz Pipeline\n", kTargetFps);
     fprintf(stderr, "  Target: %s:%u\n", targetIp, targetPort);

@@ -21,7 +21,7 @@
 namespace SynapseX {
 
 // ── Constants ──────────────────────────────────────────────
-static constexpr int kSendBufSize = 256 * 1024;  // 256 KB socket buffer
+static constexpr int kSendBufSize = 4 * 1024 * 1024;  // 4 MB socket buffer
 
 // ═══════════════════════════════════════════════════════════════
 //  Lifecycle
@@ -50,7 +50,14 @@ bool UdpSender::Initialize(const std::string& targetIp, uint16_t port) {
         return false;
     }
 
-    // ── Enlarge send buffer ──────────────────────────────
+    // ── Non-blocking mode — prevents sendto() from stalling
+    //    the main loop if the network stack backs up.
+    u_long nonBlocking = 1;
+    ioctlsocket(m_socket, FIONBIO, &nonBlocking);
+
+    // ── Enlarge send buffer to 4 MB ──────────────────────
+    // At 170 Hz with ~50 KB/frame, the buffer can absorb
+    // ~80 frames of burst before blocking.
     int bufSize = kSendBufSize;
     setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF,
                reinterpret_cast<const char*>(&bufSize), sizeof(bufSize));
@@ -68,7 +75,7 @@ bool UdpSender::Initialize(const std::string& targetIp, uint16_t port) {
     }
 
     m_initialized = true;
-    fprintf(stderr, "[UdpSender] Ready -- target %s:%u, send buffer %d KB\n",
+    fprintf(stderr, "[UdpSender] Ready -- target %s:%u, send buffer %d KB, non-blocking\n",
             targetIp.c_str(), port, kSendBufSize / 1024);
     return true;
 }
@@ -129,7 +136,19 @@ bool UdpSender::SendCompressedFrame(const uint8_t* compressedData,
 
         if (sent == SOCKET_ERROR) {
             int err = WSAGetLastError();
-            fprintf(stderr, "[UdpSender] sendto FAILED chunk %u/%u: WSAGetLastError=%d\n",
+            if (err == WSAEWOULDBLOCK) {
+                // Non-blocking send buffer full — drop this chunk.
+                // Client reassembles out-of-order; one missing chunk
+                // means the frame is lost, but the pipeline continues.
+                // A single dropped frame at 170 Hz is invisible.
+                static int dropCount = 0;
+                if (++dropCount % 100 == 1) {
+                    fprintf(stderr, "[UdpSender] packet dropped (send buf full, "
+                            "%d total drops)\n", dropCount);
+                }
+                return false;
+            }
+            fprintf(stderr, "[UdpSender] sendto FAILED chunk %u/%u: err=%d\n",
                     i + 1, totalChunks, err);
             return false;
         }

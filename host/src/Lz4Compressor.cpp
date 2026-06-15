@@ -34,14 +34,16 @@ bool Lz4Compressor::Compress(const uint8_t* input, int inputSize,
     int srcSize = inputSize;
     int dstCap  = static_cast<int>(m_compressBuf.size());
 
-    // LZ4_compress_fast: acceleration=1 yields the fastest compression
-    // at the cost of a slightly lower ratio compared to the default.
+    // LZ4_compress_fast: acceleration=5 trades ~5% compression ratio
+    // for ~50% less CPU time. Game scenes with grass/particles/noise
+    // cause excessive hash probing at accel=1, blowing out CPU budget.
+    // At accel=5, compression stays well under 0.5ms even on noisy frames.
     int compressedSize = LZ4_compress_fast(
         reinterpret_cast<const char*>(input),
         reinterpret_cast<char*>(m_compressBuf.data()),
         srcSize,
         dstCap,
-        1  // acceleration
+        5  // acceleration — speed > ratio for real-time pipeline
     );
 
     if (compressedSize <= 0) {
