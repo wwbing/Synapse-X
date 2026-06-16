@@ -59,7 +59,7 @@
   <div class="card">
     <h2>Aim Parameters</h2>
     <label>Kp (Proportional) <span class="val" id="vKp">0.40</span></label>
-    <input type="range" id="Kp" min="0.05" max="1.50" step="0.01" value="0.40">
+    <input type="range" id="Kp" min="0.05" max="1.50" step="0.01" value="0.26">
 
     <label>Kd (Damping) <span class="val" id="vKd">0.05</span></label>
     <input type="range" id="Kd" min="0.00" max="0.50" step="0.01" value="0.05">
@@ -122,14 +122,14 @@ function getConfig() {
 }
 
 function setConfigUI(cfg) {
-  $('Kp').value            = cfg.Kp || 0.40;
+  $('Kp').value            = (cfg.Kp != null) ? cfg.Kp : 0.26;
   $('Kd').value            = (cfg.Kd != null) ? cfg.Kd : 0.05;
   $('aimRange').value      = cfg.aimRange || 500;
   $('minConfidence').value = cfg.minConfidence || 0.25;
   $('aimPoint').value      = cfg.aimPoint || 0;
   $('headOffset').value    = cfg.headOffset || 0.12;
   $('aimEnabled').checked  = cfg.aimEnabled !== false;
-  $('vKp').textContent            = (cfg.Kp||0.40).toFixed(2);
+  $('vKp').textContent            = (cfg.Kp||0.26).toFixed(2);
   $('vKd').textContent            = (cfg.Kd||0.05).toFixed(2);
   $('vaimRange').textContent      = cfg.aimRange || 500;
   $('vminConfidence').textContent = cfg.minConfidence || 0.25;

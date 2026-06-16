@@ -26,7 +26,7 @@
 namespace SynapseX {
 
 struct AimConfig {
-    float Kp              = 0.40f;   // Proportional gain
+    float Kp              = 0.26f;   // Proportional gain
     float Kd              = 0.05f;   // Derivative gain (velocity damping)
     float aimRange        = 500.0f;  // max px from screen center to engage
     float minConfidence   = 0.25f;   // ignore detections below this

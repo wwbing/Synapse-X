@@ -171,6 +171,15 @@ int main(int argc, char* argv[]) {
     const uint16_t roiW16 = static_cast<uint16_t>(roiW);
     const uint16_t roiH16 = static_cast<uint16_t>(roiH);
 
+    // ── Spatial lock state (anti-ping-pong) ────────────────
+    constexpr float kKeepLockRadius = 80.0f;   // px — max dist to maintain lock
+    constexpr int   kMaxLostFrames  = 5;       // frames before giving up
+
+    bool  isLocked       = false;
+    float lockedTargetX  = 0.0f;
+    float lockedTargetY  = 0.0f;
+    int   lostFrames     = 0;
+
     auto nextTick = Clock::now();
 
     // ═══════════════════════════════════════════════════════
@@ -255,25 +264,65 @@ int main(int argc, char* argv[]) {
             uint32_t replyFrameId = 0;
             if (replyReceiver.ReceiveReplies(detections, replyFrameId)) {
                 if (!detections.empty()) {
-                    // Pick best target: highest-confidence enemy (classId=0)
-                    // closest to screen center
                     const SynapseX::Detection* best = nullptr;
                     float bestDist = 1e9f;
                     float screenCx = static_cast<float>(screenW) * 0.5f;
                     float screenCy = static_cast<float>(screenH) * 0.5f;
 
-                    for (const auto& d : detections) {
-                        if (d.classId != 0) continue;  // enemy only
-                        float cx = (d.x1 + d.x2) * 0.5f;
-                        float cy = (d.y1 + d.y2) * 0.5f;
-                        float dist = std::sqrt(
-                            (cx - screenCx) * (cx - screenCx) +
-                            (cy - screenCy) * (cy - screenCy));
-                        // Prefer higher confidence; break ties with distance
-                        if (!best || d.confidence > best->confidence ||
-                            (d.confidence == best->confidence && dist < bestDist)) {
-                            best = &d;
-                            bestDist = dist;
+                    if (isLocked) {
+                        // ── Phase A: Maintain Lock ──────────────────
+                        // Search for nearest enemy to the LAST known
+                        // locked position, not screen center.
+                        for (const auto& d : detections) {
+                            if (d.classId != 0) continue;
+                            float cx = (d.x1 + d.x2) * 0.5f;
+                            float cy = (d.y1 + d.y2) * 0.5f;
+                            float dist = std::sqrt(
+                                (cx - lockedTargetX) * (cx - lockedTargetX) +
+                                (cy - lockedTargetY) * (cy - lockedTargetY));
+                            if (dist < bestDist) {
+                                best = &d;
+                                bestDist = dist;
+                            }
+                        }
+
+                        if (best && bestDist < kKeepLockRadius) {
+                            // Target still within lock radius — maintain
+                            lockedTargetX = (best->x1 + best->x2) * 0.5f;
+                            lockedTargetY = (best->y1 + best->y2) * 0.5f;
+                            lostFrames = 0;
+                        } else {
+                            // Target drifted away or disappeared
+                            lostFrames++;
+                            if (lostFrames > kMaxLostFrames) {
+                                isLocked = false;
+                                lostFrames = 0;
+                            }
+                            best = nullptr;  // suppress PD this frame
+                        }
+                    } else {
+                        // ── Phase B: Acquire Lock ───────────────────
+                        // Closest enemy to screen center (original logic)
+                        for (const auto& d : detections) {
+                            if (d.classId != 0) continue;
+                            float cx = (d.x1 + d.x2) * 0.5f;
+                            float cy = (d.y1 + d.y2) * 0.5f;
+                            float dist = std::sqrt(
+                                (cx - screenCx) * (cx - screenCx) +
+                                (cy - screenCy) * (cy - screenCy));
+                            // Highest confidence; tie-break by distance
+                            if (!best || d.confidence > best->confidence ||
+                                (d.confidence == best->confidence && dist < bestDist)) {
+                                best = &d;
+                                bestDist = dist;
+                            }
+                        }
+
+                        if (best) {
+                            isLocked      = true;
+                            lostFrames    = 0;
+                            lockedTargetX = (best->x1 + best->x2) * 0.5f;
+                            lockedTargetY = (best->y1 + best->y2) * 0.5f;
                         }
                     }
 
