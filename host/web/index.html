@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Synapse-X Control Panel</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --border: #30363d;
+    --accent: #58a6ff; --text: #c9d1d9; --dim: #8b949e;
+    --green: #3fb950; --red: #f85149; --orange: #d2991d;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI',sans-serif;
+         display:flex; justify-content:center; padding:20px; }
+  .panel { max-width:520px; width:100%; }
+  h1 { font-size:20px; margin-bottom:4px; color:var(--accent); }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--border);
+          border-radius:8px; padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:14px; color:var(--dim); text-transform:uppercase;
+             letter-spacing:1px; margin-bottom:12px; }
+  label { display:flex; justify-content:space-between; align-items:center;
+          font-size:14px; margin-bottom:6px; }
+  label span.val { color:var(--accent); font-weight:600; min-width:42px; text-align:right; }
+  input[type=range] { -webkit-appearance:none; width:100%; height:6px;
+    border-radius:3px; background:var(--border); outline:none; margin-bottom:12px; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px;
+    border-radius:50%; background:var(--accent); cursor:pointer; }
+  select { width:100%; padding:6px; background:var(--bg); color:var(--text);
+    border:1px solid var(--border); border-radius:4px; margin-bottom:12px; font-size:14px; }
+  .toggle { display:flex; align-items:center; gap:10px; margin:12px 0; }
+  .toggle input { display:none; }
+  .toggle label.tgl { width:44px; height:24px; background:var(--border);
+    border-radius:12px; cursor:pointer; position:relative; transition:background .2s; }
+  .toggle label.tgl::after { content:''; position:absolute; top:2px; left:2px;
+    width:20px; height:20px; border-radius:50%; background:#fff; transition:left .2s; }
+  .toggle input:checked + label.tgl { background:var(--green); }
+  .toggle input:checked + label.tgl::after { left:22px; }
+  .stat-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:13px; }
+  .stat-item { display:flex; justify-content:space-between; padding:4px 8px;
+               background:#0d1117; border-radius:4px; }
+  .stat-val { color:var(--accent); font-weight:600; }
+  .stat-val.good { color:var(--green); }
+  .target-box { font-size:13px; padding:8px; background:#0d1117; border-radius:4px;
+                margin-top:8px; display:none; }
+  .target-box.active { display:block; border-left:3px solid var(--red); }
+  .target-box .cls { color:var(--red); font-weight:600; }
+  .scope-canvas { display:block; width:100%; height:180px; background:#0d1117; border-radius:4px; }
+  .scope-legend { display:flex; justify-content:space-between; font-size:11px; margin-top:4px; color:var(--dim); }
+  .footer { text-align:center; color:var(--dim); font-size:11px; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="panel">
+  <h1>Synapse-X Control Panel</h1>
+  <div class="sub">Real-time parameter tuning — changes apply instantly</div>
+
+  <div class="card">
+    <h2>Aim Parameters</h2>
+    <label>Kp (Proportional) <span class="val" id="vKp">0.40</span></label>
+    <input type="range" id="Kp" min="0.05" max="1.50" step="0.01" value="0.40">
+
+    <label>Kd (Damping) <span class="val" id="vKd">0.05</span></label>
+    <input type="range" id="Kd" min="0.00" max="0.50" step="0.01" value="0.05">
+
+    <label>Aim Range <span class="val" id="vaimRange">500</span></label>
+    <input type="range" id="aimRange" min="50" max="1000" step="10" value="500">
+
+    <label>Min Confidence <span class="val" id="vminConfidence">0.25</span></label>
+    <input type="range" id="minConfidence" min="0.0" max="1.0" step="0.01" value="0.25">
+
+    <label>Aim Point <span class="val" id="vaimPoint">Body</span></label>
+    <select id="aimPoint">
+      <option value="0">Body (bbox center)</option>
+      <option value="1">Head (top of bbox)</option>
+    </select>
+
+    <label>Head Offset <span class="val" id="vheadOffset">0.12</span></label>
+    <input type="range" id="headOffset" min="0.05" max="0.25" step="0.01" value="0.12">
+
+    <label>EMA Alpha <span class="val" id="vemaAlpha">0.20</span></label>
+    <input type="range" id="emaAlpha" min="0.01" max="1.00" step="0.01" value="0.20">
+
+    <div class="toggle">
+      <span>Aim Enabled</span>
+      <input type="checkbox" id="aimEnabled" checked>
+      <label class="tgl" for="aimEnabled"></label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Pipeline Stats</h2>
+    <div class="stat-row" id="stats"></div>
+    <div class="target-box" id="targetBox">
+      Target: <span class="cls" id="tCls">enemy</span>
+      conf=<span id="tConf">0.00</span>
+      dist=<span id="tDist">0</span>px
+      pos=(<span id="tX">0</span>, <span id="tY">0</span>)
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Oscilloscope</h2>
+    <canvas id="scopeCanvas" class="scope-canvas" width="976" height="360"></canvas>
+    <div class="scope-legend">
+      <span style="color:#f85149;">▬ rawDx</span>
+      <span style="color:#3fb950;">▬ emaDx</span>
+      <span style="color:#58a6ff;">▬ output</span>
+      <span style="color:#d2991d;">▬ residual</span>
+    </div>
+  </div>
+
+  <div class="footer">Synapse-X · connected to <span id="hostInfo">loading...</span></div>
+</div>
+
+<script>
+(function() {
+'use strict';
+
+var HOST = location.origin;
+var $ = function(id) { return document.getElementById(id); };
+var initialConfigLoaded = false;
+
+// ── Config ────────────────────────────────────────────
+function getConfig() {
+  return {
+    Kp:            parseFloat($('Kp').value),
+    Kd:            parseFloat($('Kd').value),
+    aimRange:      parseInt($('aimRange').value),
+    minConfidence: parseFloat($('minConfidence').value),
+    aimPoint:      parseInt($('aimPoint').value),
+    headOffset:    parseFloat($('headOffset').value),
+    emaAlpha:      parseFloat($('emaAlpha').value),
+    aimEnabled:    $('aimEnabled').checked
+  };
+}
+
+function setConfigUI(cfg) {
+  $('Kp').value            = cfg.Kp || 0.40;
+  $('Kd').value            = (cfg.Kd != null) ? cfg.Kd : 0.05;
+  $('aimRange').value      = cfg.aimRange || 500;
+  $('minConfidence').value = cfg.minConfidence || 0.25;
+  $('aimPoint').value      = cfg.aimPoint || 0;
+  $('headOffset').value    = cfg.headOffset || 0.12;
+  $('emaAlpha').value      = cfg.emaAlpha || 0.20;
+  $('aimEnabled').checked  = cfg.aimEnabled !== false;
+  $('vKp').textContent            = (cfg.Kp||0.40).toFixed(2);
+  $('vKd').textContent            = (cfg.Kd||0.05).toFixed(2);
+  $('vaimRange').textContent      = cfg.aimRange || 500;
+  $('vminConfidence').textContent = cfg.minConfidence || 0.25;
+  $('vaimPoint').textContent      = (cfg.aimPoint===1) ? 'Head' : 'Body';
+  $('vheadOffset').textContent    = (cfg.headOffset||0.12).toFixed(2);
+  $('vemaAlpha').textContent      = (cfg.emaAlpha||0.20).toFixed(2);
+}
+
+function postConfig() {
+  fetch(HOST+'/api/config', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(getConfig())
+  }).catch(function(){});
+}
+
+// ── Slider bindings ────────────────────────────────────
+['Kp','Kd','aimRange','minConfidence','headOffset','emaAlpha'].forEach(function(id) {
+  $(id).addEventListener('input', function() {
+    var v = $(id).value;
+    if (id === 'aimRange') v = parseInt(v);
+    else if (id === 'Kd') v = parseFloat(v).toFixed(2);
+    else v = parseFloat(v);
+    $('v'+id).textContent = v;
+    postConfig();
+  });
+});
+$('aimEnabled').addEventListener('change', postConfig);
+$('aimPoint').addEventListener('change', function() {
+  $('vaimPoint').textContent = this.value==='1' ? 'Head' : 'Body';
+  postConfig();
+});
+
+// ── Oscilloscope drawing ───────────────────────────────
+var canvas = $('scopeCanvas');
+var ctx = canvas.getContext('2d');
+var W = canvas.width;
+var H = canvas.height;
+
+function drawScope(scope) {
+  var N = scope.rawDx.length;
+  ctx.clearRect(0, 0, W, H);
+
+  if (N < 2) {
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '14px monospace';
+    ctx.fillText('Waiting for data... (' + N + ' points)', 10, H/2);
+    return;
+  }
+
+  // Y range
+  var yMin = 1e9, yMax = -1e9;
+  var keys = ['rawDx','emaDx','output','residual'];
+  for (var k = 0; k < keys.length; k++) {
+    var arr = scope[keys[k]];
+    for (var i = 0; i < arr.length; i++) {
+      var v = arr[i];
+      if (v < yMin) yMin = v;
+      if (v > yMax) yMax = v;
+    }
+  }
+  if (yMin >= yMax) { yMin = -50; yMax = 50; }
+  if (yMax - yMin < 10) { var mid = (yMin+yMax)/2; yMin = mid-5; yMax = mid+5; }
+
+  function toX(i) { return (i / (N-1)) * W; }
+  function toY(v) { return H - ((v - yMin) / (yMax - yMin)) * H; }
+
+  // Grid
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  // zero line
+  if (yMin < 0 && yMax > 0) {
+    var zy = toY(0);
+    ctx.beginPath(); ctx.moveTo(0,zy); ctx.lineTo(W,zy); ctx.stroke();
+  }
+  // quarter lines
+  for (var gy = 0; gy <= 1; gy += 0.25) {
+    var yy = toY(yMin + gy*(yMax-yMin));
+    ctx.beginPath(); ctx.moveTo(0,yy); ctx.lineTo(W,yy); ctx.stroke();
+  }
+
+  // Y labels
+  ctx.fillStyle = '#8b949e';
+  ctx.font = '10px monospace';
+  var topText = yMax.toFixed(0);
+  var botText = yMin.toFixed(0);
+  ctx.fillText(topText, 2, 12);
+  ctx.fillText(botText, 2, H-4);
+
+  // Draw 4 signals
+  var colors = {rawDx:'#f85149', emaDx:'#3fb950', output:'#58a6ff', residual:'#d2991d'};
+  for (var k2 = 0; k2 < keys.length; k2++) {
+    var key = keys[k2];
+    var arr2 = scope[key];
+    ctx.strokeStyle = colors[key];
+    ctx.lineWidth = (key === 'emaDx' || key === 'output') ? 2 : 1;
+    ctx.beginPath();
+    for (var j = 0; j < arr2.length; j++) {
+      var y = toY(arr2[j]);
+      if (y < -2) y = -2; if (y > H+2) y = H+2;
+      if (j === 0) ctx.moveTo(toX(j), y);
+      else ctx.lineTo(toX(j), y);
+    }
+    ctx.stroke();
+  }
+}
+
+// ── Polling loop ──────────────────────────────────────
+function poll() {
+  fetch(HOST+'/api/state')
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      // Init config from server on first load
+      if (!initialConfigLoaded && s.config) {
+        setConfigUI(s.config);
+        initialConfigLoaded = true;
+      }
+
+      // Stats
+      $('stats').innerHTML =
+        '<div class="stat-item">Send FPS <span class="stat-val good">'+s.sendFps.toFixed(0)+'</span></div>'+
+        '<div class="stat-item">Capture FPS <span class="stat-val">'+s.captureFps.toFixed(0)+'</span></div>'+
+        '<div class="stat-item">Pipeline <span class="stat-val good">'+s.pipelineMs.toFixed(2)+' ms</span></div>'+
+        '<div class="stat-item">Compress <span class="stat-val">'+s.compressMs.toFixed(2)+' ms</span></div>'+
+        '<div class="stat-item">Fresh frames <span class="stat-val">'+s.freshFrames+'</span></div>'+
+        '<div class="stat-item">Cache frames <span class="stat-val">'+s.cacheFrames+'</span></div>'+
+        '<div class="stat-item">Total sent <span class="stat-val">'+s.totalSent+'</span></div>'+
+        '<div class="stat-item">Uptime <span class="stat-val">'+(s.totalSent/170).toFixed(0)+'s</span></div>';
+
+      // Target
+      if (s.target && s.target.active) {
+        $('targetBox').className = 'target-box active';
+        $('tCls').textContent = s.target.classId===0 ? 'enemy' : 'teammate';
+        $('tConf').textContent = s.target.confidence.toFixed(2);
+        $('tDist').textContent = s.target.distance.toFixed(0);
+        $('tX').textContent = s.target.screenX.toFixed(0);
+        $('tY').textContent = s.target.screenY.toFixed(0);
+      } else {
+        $('targetBox').className = 'target-box';
+      }
+
+      // Scope
+      if (s.scope && s.scope.rawDx && s.scope.rawDx.length > 0) {
+        drawScope(s.scope);
+      }
+    })
+    .catch(function(e) {
+      console.error('poll error:', e);
+    });
+
+  setTimeout(poll, 500);
+}
+
+$('hostInfo').textContent = HOST;
+poll();
+})();
+</script>
+</body>
+</html>
