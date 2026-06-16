@@ -19,6 +19,7 @@
 #include "UdpReceiver.h"
 #include "TrtInference.h"
 #include "UdpReplySender.h"
+#include "CudaPreprocess.h"
 
 #include <windows.h>
 #include <cuda_runtime.h>
@@ -157,6 +158,14 @@ static void ConsumerThread(ConsumerCtx* ctx) {
     if (ctx->trtReady) {
         if (!ctx->trt->SetupStream()) {
             fprintf(stderr, "[CONSUMER] SetupStream FAILED\n");
+            ctx->trtReady = false;
+        }
+    }
+
+    // ── Init GPU preprocess (NVRTC, compiles kernel at runtime)
+    if (ctx->trtReady) {
+        if (!SynapseX::InitCudaPreprocess()) {
+            fprintf(stderr, "[CONSUMER] InitCudaPreprocess FAILED\n");
             ctx->trtReady = false;
         }
     }

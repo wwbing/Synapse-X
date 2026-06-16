@@ -73,13 +73,11 @@ target_include_directories(SynapseX_Shared INTERFACE
 target_compile_features(SynapseX_Shared INTERFACE cxx_std_17)
 
 # ═══════════════════════════════════════════════════════════════
-#  CUDA 13.1 — 寻址逻辑（暂不编译 .cu，仅为后续 TensorRT 推理打地基）
+#  CUDA 13.1 — find + compile .cu via nvcc custom command
 # ═══════════════════════════════════════════════════════════════
-# 优先使用 CMake 原生 find_package；若失败则回退到手动路径。
 set(SX_CUDA_FOUND FALSE)
 
-# 尝试自动发现 CUDA（CMake 3.17+ 的 CUDAToolkit 方式）
-find_package(CUDAToolkit QUIET)
+find_package(CUDAToolkit REQUIRED)
 if(CUDAToolkit_FOUND)
     message(STATUS "[SynapseX Client] CUDA Toolkit found via find_package:")
     message(STATUS "  Version:        ${CUDAToolkit_VERSION}")
@@ -89,18 +87,8 @@ if(CUDAToolkit_FOUND)
     set(SX_CUDA_INCLUDE_DIRS ${CUDAToolkit_INCLUDE_DIRS})
     set(SX_CUDA_LIB_DIR     "${CUDAToolkit_TARGET_DIR}/lib/x64")
 else()
-    # 手动指定 CUDA 13.1 安装路径
-    set(CUDA_BASE_PATH "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1")
-    if(EXISTS "${CUDA_BASE_PATH}/include/cuda.h")
-        message(STATUS "[SynapseX Client] CUDA 13.1 found at manual path: ${CUDA_BASE_PATH}")
-        set(SX_CUDA_FOUND TRUE)
-        set(SX_CUDA_INCLUDE_DIRS "${CUDA_BASE_PATH}/include")
-        set(SX_CUDA_LIB_DIR     "${CUDA_BASE_PATH}/lib/x64")
-    else()
-        message(WARNING "[SynapseX Client] CUDA 13.1 NOT found. "
-                        "TensorRT inference will be disabled. "
-                        "Expected at: ${CUDA_BASE_PATH}")
-    endif()
+    message(WARNING "[SynapseX Client] CUDA NOT found. "
+                    "TensorRT inference will be disabled.")
 endif()
 
 # ═══════════════════════════════════════════════════════════════
@@ -128,11 +116,13 @@ else()
 endif()
 
 # ═══════════════════════════════════════════════════════════════
-#  TensorRT 推理模块
+#  TensorRT 推理模块 + CUDA preprocess kernel
 # ═══════════════════════════════════════════════════════════════
 if(SX_CUDA_FOUND AND SX_TENSORRT_FOUND)
+    # Inference static lib
     add_library(SynapseX_Inference STATIC
         src/TrtInference.cpp
+        src/CudaPreprocess.cpp
     )
     target_include_directories(SynapseX_Inference PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -146,6 +136,7 @@ if(SX_CUDA_FOUND AND SX_TENSORRT_FOUND)
         ${SX_TRT_LIB_DIR}/nvinfer_plugin_10.lib
         ${SX_CUDA_LIB_DIR}/cudart.lib
         ${SX_CUDA_LIB_DIR}/cuda.lib
+        ${SX_CUDA_LIB_DIR}/nvrtc.lib
     )
     set(SX_HAS_INFERENCE TRUE)
 else()
