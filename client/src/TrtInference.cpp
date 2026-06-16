@@ -1,17 +1,19 @@
 // ─── TrtInference.cpp ───────────────────────────────────────────
-// TensorRT 10.16 inference module for Synapse-X Client.
+// TensorRT 10.16 inference with GPU-side BGRA→FP32 CHW preprocessing.
 //
-// Hot path: Infer() does:
-//   1. BGRA uint8 → FP32 CHW [0,1] RGB (CPU preprocess)
-//   2. cudaMemcpy H→D
-//   3. enqueueV3() — GPU inference
-//   4. cudaMemcpy D→H
-//   5. Postprocess: threshold + coordinate scaling
+// Pipeline (all on dedicated CUDA stream, single cudaStreamSynchronize):
+//   1. cudaMemcpyAsync  H→D   BGRA uint8  (raw, 1.66 MB for 416²)
+//   2. LaunchBgra8ToFp32ChwRgb  GPU kernel  (BGRA→FP32 CHW RGB)
+//   3. enqueueV3(stream)         GPU inference
+//   4. cudaStreamSynchronize     wait for entire GPU pipeline
+//   5. cudaMemcpy          D→H   output detections (7.2 KB)
 //
-// All GPU memory is allocated once in Initialize(). Zero per-frame
-// CUDA allocations.
+// PCIe savings: we transfer raw BGRA (~1.66 MB) instead of FP32 CHW
+// (~2.0 MB). The larger win is eliminating the CPU for-loop over 173K
+// pixels — GPU kernel does it in ~15–30 μs.
 
 #include "TrtInference.h"
+#include "CudaPreprocess.h"
 
 #include <cuda_runtime.h>
 #include <NvInfer.h>
@@ -25,7 +27,7 @@
 namespace SynapseX {
 
 // ═══════════════════════════════════════════════════════════════
-//  TRT Logger (singleton, minimal)
+//  TRT Logger (singleton)
 // ═══════════════════════════════════════════════════════════════
 
 class TrtLogger : public nvinfer1::ILogger {
@@ -44,7 +46,7 @@ private:
 };
 
 // ═══════════════════════════════════════════════════════════════
-//  Helper: load entire file into memory
+//  Helpers
 // ═══════════════════════════════════════════════════════════════
 
 static std::vector<char> LoadFile(const std::string& path) {
@@ -61,10 +63,6 @@ static std::vector<char> LoadFile(const std::string& path) {
             path.c_str(), size / 1048576.0);
     return data;
 }
-
-// ═══════════════════════════════════════════════════════════════
-//  Helper: get element count from Dims
-// ═══════════════════════════════════════════════════════════════
 
 static size_t DimsVolume(const nvinfer1::Dims& dims) {
     size_t vol = 1;
@@ -92,11 +90,11 @@ bool TrtInference::Initialize(const std::string& enginePath,
     m_modelH  = modelHeight;
     m_numDets = numDetections;
 
-    // ── 1. Load engine file ───────────────────────────────
+    // ── 1. Load engine ────────────────────────────────────
     auto engineData = LoadFile(enginePath);
     if (engineData.empty()) return false;
 
-    // ── 2. Deserialize engine ─────────────────────────────
+    // ── 2. Deserialize ────────────────────────────────────
     auto* runtime = nvinfer1::createInferRuntime(TrtLogger::Instance());
     if (!runtime) {
         fprintf(stderr, "[TrtInference] createInferRuntime FAILED\n");
@@ -122,7 +120,7 @@ bool TrtInference::Initialize(const std::string& enginePath,
     }
     m_context = ctx;
 
-    // ── 4. Allocate GPU buffers ───────────────────────────
+    // ── 4. Allocate GPU buffers (IO tensors + BGRA staging) ─
     int nbTensors = engine->getNbIOTensors();
     for (int i = 0; i < nbTensors; ++i) {
         const char* name = engine->getIOTensorName(i);
@@ -153,20 +151,31 @@ bool TrtInference::Initialize(const std::string& enginePath,
         }
     }
 
+    // ── 5. Allocate BGRA staging buffer on GPU ─────────────
+    size_t bgraBytes = static_cast<size_t>(m_modelW) * m_modelH * 4;
+    cudaError_t cudaErr = cudaMalloc(&m_dBgraInput, bgraBytes);
+    if (cudaErr != cudaSuccess) {
+        fprintf(stderr, "[TrtInference] cudaMalloc(BGRA %zux%zux4) FAILED: %s\n",
+                static_cast<size_t>(m_modelW), static_cast<size_t>(m_modelH),
+                cudaGetErrorString(cudaErr));
+        Cleanup();
+        return false;
+    }
+
     m_initialized = true;
-    fprintf(stderr, "[TrtInference] Ready. Model: %dx%d, %d detections, "
-            "output: %zu bytes\n",
-            m_modelW, m_modelH, m_numDets, m_outputBytes);
+    fprintf(stderr, "[TrtInference] Ready. Model: %dx%d, %d dets, "
+            "output: %zu B, BGRA buf: %zu B (GPU preprocess via NVRTC)\n",
+            m_modelW, m_modelH, m_numDets, m_outputBytes, bgraBytes);
     return true;
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  SetupStream — create dedicated CUDA stream
+//  SetupStream
 // ═══════════════════════════════════════════════════════════════
 
 bool TrtInference::SetupStream() {
     if (!m_initialized) return false;
-    if (m_stream) return true;  // already created
+    if (m_stream) return true;
 
     cudaError_t err = cudaStreamCreateWithFlags(
         reinterpret_cast<cudaStream_t*>(&m_stream),
@@ -181,7 +190,7 @@ bool TrtInference::SetupStream() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  Infer (hot path)
+//  Infer (GPU pipeline — hot path)
 // ═══════════════════════════════════════════════════════════════
 
 std::vector<Detection> TrtInference::Infer(
@@ -190,52 +199,49 @@ std::vector<Detection> TrtInference::Infer(
     std::vector<Detection> detections;
     if (!m_initialized) return detections;
 
-    // ── 1. Preprocess: BGRA uint8 → FP32 CHW RGB [0,1] ───
-    std::vector<float> input(static_cast<size_t>(m_modelW) * m_modelH * 3);
-
-    const int planeSize = m_modelW * m_modelH;
-    for (int y = 0; y < m_modelH; ++y) {
-        for (int x = 0; x < m_modelW; ++x) {
-            int srcIdx = (y * m_modelW + x) * 4;   // BGRA offset
-            int dstIdx = y * m_modelW + x;          // H×W offset
-
-            // Channel reorder: BGRA → RGB, normalize to [0, 1]
-            input[0 * planeSize + dstIdx] = bgra[srcIdx + 2] / 255.0f; // R
-            input[1 * planeSize + dstIdx] = bgra[srcIdx + 1] / 255.0f; // G
-            input[2 * planeSize + dstIdx] = bgra[srcIdx + 0] / 255.0f; // B
-            // Alpha (srcIdx+3) is ignored
-        }
-    }
-
-    // ── 2. Copy input to GPU ──────────────────────────────
-    cudaMemcpy(m_dInput, input.data(),
-               input.size() * sizeof(float),
-               cudaMemcpyHostToDevice);
-
-    // ── 3. Enqueue inference (dedicated CUDA stream) ───────
-    auto* ctx = static_cast<nvinfer1::IExecutionContext*>(m_context);
     auto* stream = reinterpret_cast<cudaStream_t>(m_stream);
+    const size_t bgraBytes = static_cast<size_t>(m_modelW) * m_modelH * 4;
+
+    // ═══════════════════════════════════════════════════════════
+    //  GPU pipeline — ALL async, queued on dedicated stream
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 1. Transfer raw BGRA uint8 H→D ────────────────────
+    cudaMemcpyAsync(m_dBgraInput, bgra, bgraBytes,
+                    cudaMemcpyHostToDevice, stream);
+
+    // ── 2. GPU kernel: BGRA uint8 → FP32 CHW RGB (NVRTC) ──
+    LaunchBgra8ToFp32ChwRgb(
+        static_cast<const uint8_t*>(m_dBgraInput),
+        static_cast<float*>(m_dInput),
+        m_modelW, m_modelH, stream);
+
+    // ── 3. TRT inference ──────────────────────────────────
+    auto* ctx = static_cast<nvinfer1::IExecutionContext*>(m_context);
     bool ok = ctx->enqueueV3(stream);
     if (!ok) {
         fprintf(stderr, "[TrtInference] enqueueV3 FAILED\n");
+        cudaStreamSynchronize(stream);
         return detections;
     }
+
+    // ── 4. Sync: wait for entire GPU pipeline ─────────────
+    // This is the ONLY synchronization point. All GPU work
+    // (copy, kernel, inference) completes before we read back.
     cudaStreamSynchronize(stream);
 
-    // ── 4. Copy output back to CPU ────────────────────────
+    // ── 5. Copy output D→H ────────────────────────────────
     std::vector<float> output(m_outputBytes / sizeof(float));
     cudaMemcpy(output.data(), m_dOutput, m_outputBytes,
                cudaMemcpyDeviceToHost);
 
-    // ── 5. Postprocess: threshold, clamp to model dimensions ─
+    // ── 6. Postprocess ────────────────────────────────────
     for (int i = 0; i < m_numDets; ++i) {
         const float* row = &output[static_cast<size_t>(i) * 6];
         float conf = row[4];
         if (conf < confThr) continue;
 
         Detection det;
-        // Coordinates stay in model pixel space — no scaling.
-        // Host knows the ROI size and can map back to screen coords.
         det.x1         = std::max(0.0f, std::min(row[0], static_cast<float>(m_modelW) - 1));
         det.y1         = std::max(0.0f, std::min(row[1], static_cast<float>(m_modelH) - 1));
         det.x2         = std::max(0.0f, std::min(row[2], static_cast<float>(m_modelW) - 1));
@@ -253,6 +259,7 @@ std::vector<Detection> TrtInference::Infer(
 // ═══════════════════════════════════════════════════════════════
 
 void TrtInference::Cleanup() {
+    if (m_dBgraInput) { cudaFree(m_dBgraInput); m_dBgraInput = nullptr; }
     if (m_stream) {
         cudaStreamDestroy(reinterpret_cast<cudaStream_t>(m_stream));
         m_stream = nullptr;

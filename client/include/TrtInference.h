@@ -52,8 +52,11 @@ public:
     // will call Infer(), after cudaSetDevice().
     bool SetupStream();
 
-    // Run inference on BGRA uint8 input using the dedicated CUDA stream.
-    // Call from a SINGLE dedicated thread after SetupStream().
+    // Run inference on BGRA uint8 input.
+    // All processing (BGRA→H→D → GPU preprocess → enqueueV3 → D→H)
+    // happens on the dedicated CUDA stream. Only one cudaStreamSynchronize
+    // is issued at the end of the pipeline.
+    // Caller provides raw CPU BGRA data — this function handles the rest.
     std::vector<Detection> Infer(const uint8_t* bgra,
                                  float confThr = 0.25f);
 
@@ -76,10 +79,11 @@ private:
     void* m_context   = nullptr;  // nvinfer1::IExecutionContext*
 
     // GPU buffers + stream
-    void*  m_dInput    = nullptr;  // input tensor (FP32 CHW)
-    void*  m_dOutput   = nullptr;  // output tensor (FP32)
+    void*  m_dInput     = nullptr;  // TRT input  (FP32 CHW, 3×W×H floats)
+    void*  m_dBgraInput = nullptr;  // raw BGRA   (uint8,  W×H×4 bytes)
+    void*  m_dOutput    = nullptr;  // TRT output (FP32)
     size_t m_outputBytes = 0;
-    void*  m_stream    = nullptr;  // cudaStream_t
+    void*  m_stream     = nullptr;  // cudaStream_t
 };
 
 } // namespace SynapseX
