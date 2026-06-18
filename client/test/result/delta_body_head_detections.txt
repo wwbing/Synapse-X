@@ -1,0 +1,4 @@
+Model: delta_body_head_416.engine
+Detections: 2
+body 0.9433 72.6 173.4 201.0 381.8
+head 0.8687 109.5 174.0 148.2 214.4
