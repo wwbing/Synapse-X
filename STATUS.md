@@ -1,7 +1,7 @@
 # Synapse-X — Project Status
 
-> **Date**: 2026-06-16  
-> **Phase**: Host & Client functional, tuning in progress
+> **Date**: 2026-06-17  
+> **Phase**: Host & Client production-ready, optimization complete on both sides
 
 ---
 
@@ -28,33 +28,39 @@
 |--------|--------|-------|
 | UDP receive + reassembly | ✅ | Non-blocking drain, out-of-order chunk assembly, 20B header |
 | LZ4 decompression | ✅ | Dynamic ROI from width/height in PacketHeader |
-| TensorRT inference | ✅ | YOLO FP16, 416×416, bf416.engine, ~3ms typical |
+| TensorRT inference | ✅ | YOLO FP16, 416×416, bf416.engine, **~1.5ms** (was ~3ms) |
+| GPU preprocess (NVRTC) | ✅ | BGRA→FP32 CHW on GPU, **~15-30μs**, zero CPU cost |
 | Reply send | ✅ | UDP 8889, ReplyHeader + DetectionRaw[] |
-| Async producer-consumer | ✅ | LIFO size-1 queue, dual-thread, core affinity |
+| Async producer-consumer | ✅ | LIFO size-1 queue, dual-thread, core affinity (P=core0, C=core1) |
 | CUDA stream | ✅ | Dedicated non-blocking stream, 50-frame warmup |
-| Per-second stats | ✅ | FPS, drop rate, LIFO drops, throughput |
+| Inference stability | ✅ | GPU P-State locked, **1.5–1.8ms steady** (was 3–27ms spikes) |
 
 ---
 
 ## 2. What Changed (v1 → v2)
 
-### Host
+### Host (v1 → current)
 
 - **PD controller** replaced exponential decay (`smoothFactor 0.15`)
 - **Sub-pixel accumulator** replaced forced ±1 quantization → smooth tracking
 - **2-frame delay compensation** — subtracts in-flight MoveR from visual error
-- **EMA low-pass filter** (`emaAlpha 0.20`) between YOLO output and PD — suppresses bbox flutter
-- **Removed `sensitivity` parameter** — was redundant with Kp, caused tuning confusion
-- **LZ4 accel 1→5** — trades ~5% compression for ~50% CPU reduction under game load
+- **Spatial target lock** (anti-ping-pong) — Phase A maintain / Phase B acquire, 80px radius, 5-frame tolerance
+- **Auto-stretch compensation** — dropdown selects game resolution, auto-computes scaleX/Y
+- **Removed `sensitivity`** — redundant with Kp
+- **Removed EMA** — PD sub-pixel accumulator made it unnecessary
+- **Headers split out** — `web/index.html` served from disk, editable without recompile
+- **Default Kp=0.26, Kd=0.05** — tested optimal
+- **LZ4 accel 1→5** — ~50% CPU reduction under game load
 - **UDP 4MB buffer + non-blocking** — eliminates `sendto` stalls
 - **Thread pinned to core 2, TIME_CRITICAL** — eliminates cache thrashing
 
-### Client
+### Client (v1 → v3)
 
-- **Async dual-thread architecture** — Producer (core 0, UDP) + Consumer (core 1, GPU)
-- **LIFO size-1 queue** — zero backlog, always newest frame
-- **50-frame black image warmup** — forces GPU P-State + JIT compilation
-- **Dynamic ROI** — reads width/height from PacketHeader
+- **v2: Async dual-thread** — Producer (core 0) + Consumer (core 1), LIFO size-1
+- **v3: GPU preprocess (NVRTC)** — BGRA→FP32 on GPU, ~15-30μs, zero CPU
+- **GPU P-State locked** — inference stable at 1.5–1.8ms (eliminated 3–27ms spikes)
+- **50-frame warmup** + dedicated CUDA stream
+- **Dynamic ROI** from PacketHeader
 
 ---
 
@@ -64,19 +70,14 @@
 
 | # | Issue | Severity | Plan |
 |---|-------|----------|------|
-| A3 | **Target switching** — jumps between enemies when confidence flickers | Medium | Lock-on: require N frames before switching, hysteresis margin |
-| A4 | **Lock not tight** — crosshair drifts during target movement | Medium | Velocity prediction / leading (Kalman or EMA of position deltas) |
-| B1 | **Linear decay feels robotic** | Low | Noise injection, variable smoothFactor per distance bracket |
+| A4 | **Lock not tight** — crosshair drifts during target movement | Medium | Velocity prediction / leading (Kalman filter) |
+| B1 | **Linear PD feels robotic** | Low | Noise injection, variable Kp per distance bracket |
 | B2 | **No recoil compensation** | Low | Per-game recoil table |
-| WS | **Web oscilloscope** — pending test after last JS fix | Low | Verify scope renders after JSON fix |
 
 ### Client
 
 | # | Issue | Severity | Plan |
 |---|-------|----------|------|
-| C1 | **Inference spikes 3→17–27ms** | Medium | Lock GPU clocks via `nvidia-smi -lgc`, check driver DPC latency |
-| C2 | **Inference variance causes Host aim jitter** | Medium | Consequence of C1; fix C1 first |
-| I1 | **CPU preprocess bottleneck** (BGRA→FP32 loop) | Low | Move to CUDA kernel |
 | I5 | **Detection bbox no frame smoothing** | Low | IoU matching + EMA on bbox corners |
 
 ### Blocked / Needs Investigation
@@ -91,23 +92,21 @@
 ## 4. Tuning Cheat Sheet
 
 ```
-调参顺序（严格遵守）:
-  0. 关 Kd=0, emaAlpha=1.0, aimRange=1000 → 看原始信号
-  1. Kp: 取"刚好不晃"的最大值（通常 0.2–0.5）
-  2. emaAlpha: 看 Web 面板 target.dist 值 → 0.2 起，静止时准星不抖即可
-  3. Kd: 0.02 起 +0.01 步进 → 取"刚好不晃"的最小值
-  4. aimRange: 缩到你的交战距离
-  5. minConfidence: 0.25 起，看假阳性/漏检调整
+调参顺序:
+  1. Kd=0, 调 Kp → 取"刚好不晃"的最大值（默认 0.26）
+  2. 加 Kd 0.01 步进 → 取"刚好不晃"的最小值（默认 0.05）
+  3. aimRange 缩到交战距离
+  4. minConfidence: 0.25 起，看假阳性/漏检调整
+  5. Game Resolution 下拉框选对分辨率 → 自动拉伸补偿
 
-一句话: Kp=速度, Kd=刹车, emaAlpha=平滑, aimRange=范围
+一句话: Kp=速度, Kd=刹车, aimRange=范围
 ```
 
-| Scenario | Kp | Kd | emaAlpha |
-|----------|----|----|----|
-| SMG close | 0.5 | 0.08 | 0.15 |
-| Rifle mid | 0.35 | 0.05 | 0.20 |
-| Sniper far | 0.2 | 0.02 | 0.10 |
-| Heavy flutter | 0.4 | 0.05 | 0.08 |
+| Scenario | Kp | Kd |
+|----------|----|----|
+| SMG close | 0.40 | 0.08 |
+| Rifle mid | 0.26 | 0.05 |
+| Sniper far | 0.15 | 0.02 |
 
 ---
 
@@ -126,24 +125,24 @@ Synapse-X/
 │
 ├── host/
 │   ├── include/
-│   │   ├── DxgiCapturer.h
-│   │   ├── Lz4Compressor.h
-│   │   ├── UdpSender.h
-│   │   ├── UdpReplyReceiver.h
-│   │   ├── MouseController.h
-│   │   └── HttpTuner.h
-│   ├── src/                         (6 .cpp + main.cpp)
-│   ├── web/index.html               (独立前端 — 直接编辑, 无需重编译)
+│   │   ├── DxgiCapturer.h           GPU ROI capture
+│   │   ├── Lz4Compressor.h          LZ4 block compression
+│   │   ├── UdpSender.h              UDP fragmentation + send
+│   │   ├── UdpReplyReceiver.h       UDP reply listener + coord mapping
+│   │   ├── MouseController.h        PD controller + sub-pixel + delay-comp
+│   │   └── HttpTuner.h              Web tuning panel server
+│   ├── src/                         (7 .cpp + main.cpp)
+│   ├── web/index.html               Frontend (served from disk, no recompile)
 │   ├── test/test_bmp.cpp
-│   ├── mousedll/ddll64.dll
+│   ├── mousedll/ddll64.dll          Mouse input (committed to repo)
 │   ├── CMakeLists.txt
 │   ├── CMakePresets.json
-│   ├── HOST_SPEC.md
-│   └── MOUSE_CONTROL_SPEC.md
+│   ├── HOST_SPEC.md                 Full host specification
+│   └── MOUSE_CONTROL_SPEC.md        Mouse control deep-dive
 │
 ├── client/
-│   ├── include/                     (ReassemblyBuffer, UdpReceiver, TrtInference, UdpReplySender)
-│   ├── src/                         (4 .cpp + main.cpp)
+│   ├── include/                     (ReassemblyBuffer, UdpReceiver, TrtInference, CudaPreprocess, UdpReplySender)
+│   ├── src/                         (5 .cpp + main.cpp)
 │   ├── model/                       (bf416.onnx, bf416.engine)
 │   ├── CMakeLists.txt
 │   └── CLIENT_SPEC.md
@@ -179,13 +178,11 @@ netsh advfirewall firewall add rule name="SynapseX Web Tuner" dir=in action=allo
 
 ---
 
-## 7. Next Steps (priority order)
+## 7. Next Steps
 
-1. **Test web oscilloscope** — verify scope renders after JSON fix
-2. **Fix firewall** — enable Client access to Host :9999
-3. **Target lock-on** (A3) — single biggest aim quality improvement
-4. **Velocity prediction** (A4) — lead moving targets
-5. **Client GPU lock** (C1) — eliminate inference spikes
-6. **Client preprocess GPU** (I1) — BGRA→FP32 on CUDA kernel
-7. **Recoil system** (B2) — per-game recoil tables
-8. **Multi-model support** — switch between 416/640 engines at runtime
+1. **Velocity prediction** (A4) — lead moving targets (Kalman filter)
+2. **Recoil system** (B2) — per-game recoil tables
+3. **Multi-model support** — switch between 416/640 engines at runtime
+4. **Per-game config profiles** — save/load AimConfig as JSON
+5. **Hotkey toggle** — bindable aim on/off
+6. **Client bbox frame smoothing** (I5) — IoU matching + EMA

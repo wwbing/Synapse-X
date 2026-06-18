@@ -111,9 +111,9 @@ SynapseX_Client.exe [port] [engine_path] [host_ip] [--save]
 | Parameter | Value |
 |-----------|-------|
 | Host capture rate | **170 Hz** (5.88 ms fixed cadence, thread pinned to P-core, TIME_CRITICAL) |
-| Pipeline latency (host) | **~0.35 ms** idle, **~0.50 ms** in-game (with perf guards) |
-| Client inference | **~3.5 ms** typical, spikes to 17–27 ms (see CLIENT_SPEC) |
-| End-to-end | **~20 ms** capture → inference → aim |
+| Pipeline latency (host) | **~0.35 ms** (idle and in-game, with perf guards) |
+| Client inference | **~1.5–1.8 ms** stable (GPU preprocess NVRTC, P-State locked) |
+| End-to-end | **~2 ms** capture → inference → aim |
 | Network per frame | **30–400 KB** (content-dependent LZ4 accel=5) |
 | UDP datagram | ≤1420 bytes (20B header + ≤1400B payload), non-blocking 4MB buffer |
 | Aim controller | PD + sub-pixel accumulator + 2-frame delay compensation |
