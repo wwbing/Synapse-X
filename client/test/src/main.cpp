@@ -69,8 +69,12 @@ int main(int argc, char* argv[]) {
     // ── 2. GPU init ──────────────────────────────────────
     cudaSetDevice(0);
     SynapseX::TrtInference trt;
-    if (!trt.Initialize(enginePath, 416, 416, 300)) {
+    if (!trt.Initialize()) {
         fprintf(stderr, "FATAL: TRT init failed\n");
+        return 1;
+    }
+    if (!trt.LoadEngineByPath(enginePath)) {
+        fprintf(stderr, "FATAL: Engine load failed\n");
         return 1;
     }
     if (!trt.SetupStream()) {
