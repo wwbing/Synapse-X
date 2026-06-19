@@ -46,8 +46,6 @@
                 margin-top:8px; display:none; }
   .target-box.active { display:block; border-left:3px solid var(--red); }
   .target-box .cls { color:var(--red); font-weight:600; }
-  .scope-canvas { display:block; width:100%; height:180px; background:#0d1117; border-radius:4px; }
-  .scope-legend { display:flex; justify-content:space-between; font-size:11px; margin-top:4px; color:var(--dim); }
   .footer { text-align:center; color:var(--dim); font-size:11px; margin-top:8px; }
 </style>
 </head>
@@ -59,13 +57,13 @@
   <div class="card">
     <h2>Aim Parameters</h2>
     <label>Kp (Proportional) <span class="val" id="vKp">0.40</span></label>
-    <input type="range" id="Kp" min="0.05" max="1.50" step="0.01" value="0.26">
+    <input type="range" id="Kp" min="0.05" max="1.50" step="0.01" value="0.30">
 
     <label>Kd (Damping) <span class="val" id="vKd">0.05</span></label>
     <input type="range" id="Kd" min="0.00" max="0.50" step="0.01" value="0.05">
 
-    <label>Aim Range <span class="val" id="vaimRange">500</span></label>
-    <input type="range" id="aimRange" min="50" max="1000" step="10" value="500">
+    <label>Aim Range <span class="val" id="vaimRange">200</span></label>
+    <input type="range" id="aimRange" min="50" max="1000" step="10" value="200">
 
     <label>Min Confidence <span class="val" id="vminConfidence">0.25</span></label>
     <input type="range" id="minConfidence" min="0.0" max="1.0" step="0.01" value="0.25">
@@ -146,9 +144,9 @@ function getConfig() {
 }
 
 function setConfigUI(cfg) {
-  $('Kp').value            = (cfg.Kp != null) ? cfg.Kp : 0.26;
+  $('Kp').value            = (cfg.Kp != null) ? cfg.Kp : 0.30;
   $('Kd').value            = (cfg.Kd != null) ? cfg.Kd : 0.05;
-  $('aimRange').value      = cfg.aimRange || 500;
+  $('aimRange').value      = cfg.aimRange || 200;
   $('minConfidence').value = cfg.minConfidence || 0.25;
   $('aimPoint').value      = cfg.aimPoint || 0;
   $('headOffset').value    = cfg.headOffset || 0.20;
@@ -158,9 +156,9 @@ function setConfigUI(cfg) {
   var gn = ['Apex','Delta Force','Battlefield 6','Overwatch 2'];
   $('vgameSelect').textContent = gn[cfg.modelId||0] || 'Apex';
   $('aimEnabled').checked  = cfg.aimEnabled !== false;
-  $('vKp').textContent            = (cfg.Kp||0.26).toFixed(2);
+  $('vKp').textContent            = (cfg.Kp||0.30).toFixed(2);
   $('vKd').textContent            = (cfg.Kd||0.05).toFixed(2);
-  $('vaimRange').textContent      = cfg.aimRange || 500;
+  $('vaimRange').textContent      = cfg.aimRange || 200;
   $('vminConfidence').textContent = cfg.minConfidence || 0.25;
   $('vaimPoint').textContent      = (cfg.aimPoint===1) ? 'Head' : 'Body';
   $('vheadOffset').textContent    = (cfg.headOffset||0.20).toFixed(2);
@@ -206,80 +204,6 @@ $('aimPoint').addEventListener('change', function() {
   postConfig();
 });
 
-// ── Oscilloscope drawing ───────────────────────────────
-var canvas = $('scopeCanvas');
-var ctx = canvas.getContext('2d');
-var W = canvas.width;
-var H = canvas.height;
-
-function drawScope(scope) {
-  var N = scope.rawDx.length;
-  ctx.clearRect(0, 0, W, H);
-
-  if (N < 2) {
-    ctx.fillStyle = '#8b949e';
-    ctx.font = '14px monospace';
-    ctx.fillText('Waiting for data... (' + N + ' points)', 10, H/2);
-    return;
-  }
-
-  // Y range
-  var yMin = 1e9, yMax = -1e9;
-  var keys = ['rawDx','emaDx','output','residual'];
-  for (var k = 0; k < keys.length; k++) {
-    var arr = scope[keys[k]];
-    for (var i = 0; i < arr.length; i++) {
-      var v = arr[i];
-      if (v < yMin) yMin = v;
-      if (v > yMax) yMax = v;
-    }
-  }
-  if (yMin >= yMax) { yMin = -50; yMax = 50; }
-  if (yMax - yMin < 10) { var mid = (yMin+yMax)/2; yMin = mid-5; yMax = mid+5; }
-
-  function toX(i) { return (i / (N-1)) * W; }
-  function toY(v) { return H - ((v - yMin) / (yMax - yMin)) * H; }
-
-  // Grid
-  ctx.strokeStyle = '#21262d';
-  ctx.lineWidth = 1;
-  // zero line
-  if (yMin < 0 && yMax > 0) {
-    var zy = toY(0);
-    ctx.beginPath(); ctx.moveTo(0,zy); ctx.lineTo(W,zy); ctx.stroke();
-  }
-  // quarter lines
-  for (var gy = 0; gy <= 1; gy += 0.25) {
-    var yy = toY(yMin + gy*(yMax-yMin));
-    ctx.beginPath(); ctx.moveTo(0,yy); ctx.lineTo(W,yy); ctx.stroke();
-  }
-
-  // Y labels
-  ctx.fillStyle = '#8b949e';
-  ctx.font = '10px monospace';
-  var topText = yMax.toFixed(0);
-  var botText = yMin.toFixed(0);
-  ctx.fillText(topText, 2, 12);
-  ctx.fillText(botText, 2, H-4);
-
-  // Draw 4 signals
-  var colors = {rawDx:'#f85149', emaDx:'#3fb950', output:'#58a6ff', residual:'#d2991d'};
-  for (var k2 = 0; k2 < keys.length; k2++) {
-    var key = keys[k2];
-    var arr2 = scope[key];
-    ctx.strokeStyle = colors[key];
-    ctx.lineWidth = (key === 'emaDx' || key === 'output') ? 2 : 1;
-    ctx.beginPath();
-    for (var j = 0; j < arr2.length; j++) {
-      var y = toY(arr2[j]);
-      if (y < -2) y = -2; if (y > H+2) y = H+2;
-      if (j === 0) ctx.moveTo(toX(j), y);
-      else ctx.lineTo(toX(j), y);
-    }
-    ctx.stroke();
-  }
-}
-
 // ── Polling loop ──────────────────────────────────────
 function poll() {
   fetch(HOST+'/api/state')
@@ -314,16 +238,12 @@ function poll() {
         $('targetBox').className = 'target-box';
       }
 
-      // Scope
-      if (s.scope && s.scope.rawDx && s.scope.rawDx.length > 0) {
-        drawScope(s.scope);
-      }
     })
     .catch(function(e) {
       console.error('poll error:', e);
     });
 
-  setTimeout(poll, 500);
+  setTimeout(poll, 200);
 }
 
 $('hostInfo').textContent = HOST;
