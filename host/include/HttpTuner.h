@@ -74,6 +74,7 @@ public:
     // Read current config (for aim-assist)
     AimConfig GetConfig() const;
     bool      IsAimEnabled() const;
+    void      SetAimEnabled(bool enabled);
 
     // Update pipeline stats (call once per second)
     void UpdateStats(double sendFps, double captureFps,

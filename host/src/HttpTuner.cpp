@@ -214,6 +214,11 @@ bool HttpTuner::IsAimEnabled() const {
     return m_state.aimEnabled;
 }
 
+void HttpTuner::SetAimEnabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_state.aimEnabled = enabled;
+}
+
 void HttpTuner::UpdateStats(double sendFps, double captureFps,
                              double pipelineMs, double compressMs,
                              int fresh, int cache, uint64_t totalSent) {

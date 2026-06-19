@@ -194,6 +194,20 @@ int main(int argc, char* argv[]) {
     //  MAIN LOOP — Fixed 170 Hz
     // ═══════════════════════════════════════════════════════
     while (g_running) {
+        // ── Hotkeys: PageUp=ON, PageDown=OFF ──────────────
+        if (GetAsyncKeyState(VK_PRIOR) & 0x8000) {  // PageUp
+            if (!tuner.IsAimEnabled()) {
+                tuner.SetAimEnabled(true);
+                fprintf(stderr, "[Hotkey] Aim ON\n");
+            }
+        }
+        if (GetAsyncKeyState(VK_NEXT) & 0x8000) {   // PageDown
+            if (tuner.IsAimEnabled()) {
+                tuner.SetAimEnabled(false);
+                fprintf(stderr, "[Hotkey] Aim OFF\n");
+            }
+        }
+
         // ── Stage 1: Capture (try every tick) ─────────────
         auto t0 = Clock::now();
         bool gotFrame = capturer.CaptureFrame(rawBuffer);
