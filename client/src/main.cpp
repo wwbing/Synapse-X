@@ -170,6 +170,17 @@ static void ConsumerThread(ConsumerCtx* ctx) {
         }
     }
 
+    // ── Load initial engine (modelId from host, default 0) ──
+    if (ctx->trtReady) {
+        uint8_t initModel = g_targetModelId.load(std::memory_order_relaxed);
+        if (!ctx->trt->LoadEngine(initModel)) {
+            fprintf(stderr, "[CONSUMER] LoadEngine(%u) FAILED. "
+                    "Inference disabled until valid modelId received.\n",
+                    initModel);
+            ctx->trtReady = false;
+        }
+    }
+
     // ── Warmup: 50 black dummy frames ─────────────────────
     if (ctx->trtReady) {
         fprintf(stderr, "[CONSUMER] Warming up GPU (50 dummy frames)...\n");
@@ -235,13 +246,27 @@ static void ConsumerThread(ConsumerCtx* ctx) {
 
             // ── Print detections periodically ─────────────
             if (localFrameCount % kPrintDetEvery == 0 && !dets.empty()) {
-                fprintf(stderr, "[INFER] Frame #%llu (hostId=%u): %zu detections\n",
+                static const char* kApexCls[]  = {"enemy"};
+                static const char* kDeltaCls[] = {"body", "head"};
+                static const char* kBf6Cls[]   = {"enemy", "teammate"};
+                static const char* kOw2Cls[]   = {"enemy"};
+
+                uint8_t mid = ctx->trt->GetCurrentModelId();
+                const char* gameName; const char* const* clsNames; int numCls;
+                switch (mid) {
+                    case 0: gameName="Apex";  clsNames=kApexCls;  numCls=1; break;
+                    case 1: gameName="Delta"; clsNames=kDeltaCls; numCls=2; break;
+                    case 2: gameName="BF6";   clsNames=kBf6Cls;   numCls=2; break;
+                    case 3: gameName="OW2";   clsNames=kOw2Cls;   numCls=1; break;
+                    default: gameName="?";    clsNames=nullptr;   numCls=0; break;
+                }
+                fprintf(stderr, "[INFER] Frame #%llu (hostId=%u) [%s]: %zu detections\n",
                         static_cast<unsigned long long>(localFrameCount),
-                        fid, dets.size());
+                        fid, gameName, dets.size());
                 int show = std::min(static_cast<int>(dets.size()), 3);
                 for (int i = 0; i < show; ++i) {
-                    const char* cn = (dets[i].classId == 0) ? "enemy" :
-                                     (dets[i].classId == 1) ? "teammate" : "?";
+                    int cls = dets[i].classId;
+                    const char* cn = (cls >= 0 && cls < numCls) ? clsNames[cls] : "?";
                     fprintf(stderr, "  [%s] conf=%.2f box=[%.0f,%.0f,%.0f,%.0f]\n",
                             cn, dets[i].confidence,
                             dets[i].x1, dets[i].y1, dets[i].x2, dets[i].y2);
@@ -291,7 +316,7 @@ int main(int argc, char* argv[]) {
     }
 
     SynapseX::TrtInference trt;
-    bool trtReady = trt.Initialize(enginePath, 416, 416, 300);
+    bool trtReady = trt.Initialize();
     if (!trtReady) {
         fprintf(stderr, "[WARN] TRT inference NOT available. "
                 "Receive-only mode.\n");

@@ -181,21 +181,23 @@ bool UdpReceiver::ProcessDatagram(const uint8_t* data, int len) {
     const uint16_t frameWidth   = header->width;
     const uint16_t frameHeight  = header->height;
 
+    const uint8_t modelId = header->modelId;
+
     if (!m_buffer.HasActiveFrame()) {
         // First frame ever — start collecting.
         m_buffer.StartFrame(frameId, totalSize, totalChunks,
                             frameWidth, frameHeight);
         m_activeFrameIncomplete = true;
+        g_targetModelId.store(modelId, std::memory_order_relaxed);
     } else if (IsNewerFrameId(frameId, m_buffer.expectedFrameId)) {
         // Newer frame arrived — flush old partial frame.
-        // This is the iron law of low-latency vision:
-        // never wait for stragglers from a stale frame.
         if (m_activeFrameIncomplete) {
             m_totalDropped++;
         }
         m_buffer.StartFrame(frameId, totalSize, totalChunks,
                             frameWidth, frameHeight);
         m_activeFrameIncomplete = true;
+        g_targetModelId.store(modelId, std::memory_order_relaxed);
     } else if (frameId != m_buffer.expectedFrameId) {
         // Stale packet from an older frame — drop.
         return false;
