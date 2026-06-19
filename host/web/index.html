@@ -76,8 +76,10 @@
       <option value="1">Head (top of bbox)</option>
     </select>
 
+    <div id="headOffsetRow" style="display:none">
     <label>Head Offset <span class="val" id="vheadOffset">0.12</span></label>
-    <input type="range" id="headOffset" min="0.05" max="0.25" step="0.01" value="0.12">
+    <input type="range" id="headOffset" min="0.05" max="0.25" step="0.01" value="0.20">
+    </div>
 
     <label>Game Resolution</label>
     <select id="gameRes" style="width:100%;padding:6px;background:var(--bg);color:var(--text);
@@ -149,7 +151,7 @@ function setConfigUI(cfg) {
   $('aimRange').value      = cfg.aimRange || 500;
   $('minConfidence').value = cfg.minConfidence || 0.25;
   $('aimPoint').value      = cfg.aimPoint || 0;
-  $('headOffset').value    = cfg.headOffset || 0.12;
+  $('headOffset').value    = cfg.headOffset || 0.20;
   var gw = cfg.gameW || 3840, gh = cfg.gameH || 2160;
   $('gameRes').value         = gw + ',' + gh;
   $('gameSelect').value      = cfg.modelId || 0;
@@ -161,7 +163,8 @@ function setConfigUI(cfg) {
   $('vaimRange').textContent      = cfg.aimRange || 500;
   $('vminConfidence').textContent = cfg.minConfidence || 0.25;
   $('vaimPoint').textContent      = (cfg.aimPoint===1) ? 'Head' : 'Body';
-  $('vheadOffset').textContent    = (cfg.headOffset||0.12).toFixed(2);
+  $('vheadOffset').textContent    = (cfg.headOffset||0.20).toFixed(2);
+  updateHeadOffsetUI();
 }
 
 function postConfig() {
@@ -184,13 +187,22 @@ function postConfig() {
 });
 $('aimEnabled').addEventListener('change', postConfig);
 $('gameRes').addEventListener('change', postConfig);
+function updateHeadOffsetUI() {
+  var isHead   = $('aimPoint').value === '1';
+  var isDelta  = parseInt($('gameSelect').value) === 1;
+  // Show headOffset only for non-Delta models in Head mode
+  var show = isHead && !isDelta;
+  $('headOffsetRow').style.display = show ? '' : 'none';
+}
 $('gameSelect').addEventListener('change', function() {
   var names = ['Apex','Delta Force','Battlefield 6','Overwatch 2'];
   $('vgameSelect').textContent = names[parseInt(this.value)] || 'Apex';
+  updateHeadOffsetUI();
   postConfig();
 });
 $('aimPoint').addEventListener('change', function() {
   $('vaimPoint').textContent = this.value==='1' ? 'Head' : 'Body';
+  updateHeadOffsetUI();
   postConfig();
 });
 

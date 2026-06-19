@@ -31,7 +31,7 @@ struct AimConfig {
     float aimRange        = 500.0f;  // max px from screen center to engage
     float minConfidence   = 0.25f;   // ignore detections below this
     int   aimPoint        = 0;       // 0 = body (center), 1 = head (top)
-    float headOffset      = 0.12f;   // head aim: top fraction of bbox
+    float headOffset      = 0.20f;   // head aim: top fraction of bbox
     int   nativeW         = 3840;    // monitor native width
     int   nativeH         = 2160;    // monitor native height
     int   gameW           = 3840;    // game actual width (from web dropdown)
