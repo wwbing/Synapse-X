@@ -54,8 +54,21 @@ bool DxgiCapturer::Initialize(int roiWidth, int roiHeight) {
 }
 
 bool DxgiCapturer::CaptureFrame(std::vector<uint8_t>& outBuffer) {
+    // Cold-start rebuild: if previously failed, retry after cooldown
     if (!m_initialized || !m_duplication) {
-        return false;
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - m_lastRebuildAttempt).count();
+        if (elapsed >= kRebuildCooldownMs) {
+            m_lastRebuildAttempt = now;
+            SX_LOG("Retrying rebuild after failure (elapsed=%dms)...", (int)elapsed);
+            if (CreateDeviceAndDuplication()) {
+                SX_LOG("Cold-start rebuild OK.");
+                m_initialized = true;
+                // Fall through to capture attempt below
+            }
+        }
+        if (!m_initialized) return false;
     }
 
     if (m_recreating) {

@@ -313,9 +313,8 @@ int main(int argc, char* argv[]) {
 
                         case 1: // Delta     — 2-class: 0=body, 1=head
                             if (aimCfg.aimPoint == 1) {
-                                // Head mode: real head bypasses minConfidence (head bboxes are small, low conf is normal)
-                                if (d.classId == 1) {
-                                    ap.cy       = bcyCenter; // real head center
+                                if (d.classId == 1 && d.confidence >= aimCfg.deltaHeadConfidence) {
+                                    ap.cy       = bcyCenter;
                                     ap.priority = 1;
                                 } else if (d.classId == 0 && d.confidence >= aimCfg.minConfidence) {
                                     ap.cy       = bcyHead;   // body → faked head (filtered)
