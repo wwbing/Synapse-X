@@ -15,14 +15,32 @@
          display:flex; justify-content:center; padding:20px; }
   .panel { max-width:520px; width:100%; }
   h1 { font-size:20px; margin-bottom:4px; color:var(--accent); }
-  .sub { color:var(--dim); font-size:13px; margin-bottom:20px; }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:16px; }
+
+  /* ── Master Toggle ─────────────────────────── */
+  .master-toggle { display:flex; align-items:center; gap:14px;
+    background:var(--card); border:1px solid var(--border);
+    border-radius:10px; padding:16px 20px; margin-bottom:20px; }
+  .master-toggle span { font-size:16px; font-weight:600; }
+  .master-toggle input { display:none; }
+  .master-toggle label.tgl { width:52px; height:28px; background:var(--border);
+    border-radius:14px; cursor:pointer; position:relative; transition:background .25s; }
+  .master-toggle label.tgl::after { content:''; position:absolute; top:3px; left:3px;
+    width:22px; height:22px; border-radius:50%; background:#fff; transition:left .25s; }
+  .master-toggle input:checked + label.tgl { background:var(--green);
+    box-shadow: 0 0 14px rgba(63,185,80,0.4); }
+  .master-toggle input:checked + label.tgl::after { left:27px; }
+  .master-status { font-size:13px; color:var(--red); }
+  .master-toggle input:checked ~ .master-status { color:var(--green); }
+
+  /* ── Cards ─────────────────────────────────── */
   .card { background:var(--card); border:1px solid var(--border);
-          border-radius:8px; padding:16px; margin-bottom:16px; }
-  .card h2 { font-size:14px; color:var(--dim); text-transform:uppercase;
-             letter-spacing:1px; margin-bottom:12px; }
+          border-radius:10px; padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:13px; color:var(--dim); text-transform:uppercase;
+             letter-spacing:1px; margin-bottom:14px; }
   label { display:flex; justify-content:space-between; align-items:center;
           font-size:14px; margin-bottom:6px; }
-  label span.val { color:var(--accent); font-weight:600; min-width:42px; text-align:right; }
+  label span.val { color:var(--accent); font-weight:600; min-width:48px; text-align:right; }
   input[type=range] { -webkit-appearance:none; width:100%; height:6px;
     border-radius:3px; background:var(--border); outline:none; margin-bottom:12px; }
   input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px;
@@ -37,6 +55,8 @@
     width:20px; height:20px; border-radius:50%; background:#fff; transition:left .2s; }
   .toggle input:checked + label.tgl { background:var(--green); }
   .toggle input:checked + label.tgl::after { left:22px; }
+
+  /* ── Stats ──────────────────────────────────── */
   .stat-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:13px; }
   .stat-item { display:flex; justify-content:space-between; padding:4px 8px;
                background:#0d1117; border-radius:4px; }
@@ -46,29 +66,41 @@
                 margin-top:8px; display:none; }
   .target-box.active { display:block; border-left:3px solid var(--red); }
   .target-box .cls { color:var(--red); font-weight:600; }
-  .scope-canvas { display:block; width:100%; height:180px; background:#0d1117; border-radius:4px; }
-  .scope-legend { display:flex; justify-content:space-between; font-size:11px; margin-top:4px; color:var(--dim); }
+
+  /* ── Details / Advanced ─────────────────────── */
+  details { margin-top:4px; }
+  details summary { font-size:12px; color:var(--dim); cursor:pointer;
+    padding:6px 0; user-select:none; }
+  details summary:hover { color:var(--text); }
+  details .card { margin-top:12px; }
+
   .footer { text-align:center; color:var(--dim); font-size:11px; margin-top:8px; }
 </style>
 </head>
 <body>
 <div class="panel">
   <h1>Synapse-X Control Panel</h1>
-  <div class="sub">Real-time parameter tuning — changes apply instantly</div>
+  <div class="sub">Real-time tuning — changes apply instantly</div>
 
+  <!-- ── Master Toggle ─────────────────────────── -->
+  <div class="master-toggle">
+    <span>System Status</span>
+    <input type="checkbox" id="aimEnabled" checked>
+    <label class="tgl" for="aimEnabled"></label>
+    <span class="master-status" id="masterStatus">ACTIVE</span>
+  </div>
+
+  <!-- ── Aim Parameters ────────────────────────── -->
   <div class="card">
     <h2>Aim Parameters</h2>
-    <label>Kp (Proportional) <span class="val" id="vKp">0.40</span></label>
-    <input type="range" id="Kp" min="0.05" max="1.50" step="0.01" value="0.26">
+    <label>Tracking Speed (Kp) <span class="val" id="vKp">0.30</span></label>
+    <input type="range" id="Kp" min="0.05" max="1.50" step="0.01" value="0.30">
 
-    <label>Kd (Damping) <span class="val" id="vKd">0.05</span></label>
+    <label>Smoothness / Humanize (Kd) <span class="val" id="vKd">0.05</span></label>
     <input type="range" id="Kd" min="0.00" max="0.50" step="0.01" value="0.05">
 
-    <label>Aim Range <span class="val" id="vaimRange">500</span></label>
-    <input type="range" id="aimRange" min="50" max="1000" step="10" value="500">
-
-    <label>Min Confidence <span class="val" id="vminConfidence">0.25</span></label>
-    <input type="range" id="minConfidence" min="0.0" max="1.0" step="0.01" value="0.25">
+    <label>FOV Radius (px) <span class="val" id="vaimRange">200</span></label>
+    <input type="range" id="aimRange" min="50" max="1000" step="10" value="200">
 
     <label>Aim Point <span class="val" id="vaimPoint">Body</span></label>
     <select id="aimPoint">
@@ -76,12 +108,13 @@
       <option value="1">Head (top of bbox)</option>
     </select>
 
-    <label>Head Offset <span class="val" id="vheadOffset">0.12</span></label>
-    <input type="range" id="headOffset" min="0.05" max="0.25" step="0.01" value="0.12">
+    <div id="headOffsetRow" style="display:none">
+    <label>Head Offset <span class="val" id="vheadOffset">0.20</span></label>
+    <input type="range" id="headOffset" min="0.05" max="0.25" step="0.01" value="0.20">
+    </div>
 
     <label>Game Resolution</label>
-    <select id="gameRes" style="width:100%;padding:6px;background:var(--bg);color:var(--text);
-      border:1px solid var(--border);border-radius:4px;margin-bottom:12px;font-size:14px;">
+    <select id="gameRes">
       <option value="3840,2160">3840x2160 (16:9 native)</option>
       <option value="3456,2160">3456x2160 (16:10 stretched)</option>
       <option value="2880,2160">2880x2160 (4:3 stretched)</option>
@@ -90,33 +123,39 @@
     </select>
 
     <label>Select Game <span class="val" id="vgameSelect">Apex</span></label>
-    <select id="gameSelect" style="width:100%;padding:6px;background:var(--bg);color:var(--text);
-      border:1px solid var(--border);border-radius:4px;margin-bottom:12px;font-size:14px;">
+    <select id="gameSelect">
       <option value="0">Apex Legends (ID: 0)</option>
       <option value="1">Delta Force (ID: 1)</option>
       <option value="2">Battlefield 6 (ID: 2)</option>
       <option value="3">Overwatch 2 (ID: 3)</option>
     </select>
-
-    <div class="toggle">
-      <span>Aim Enabled</span>
-      <input type="checkbox" id="aimEnabled" checked>
-      <label class="tgl" for="aimEnabled"></label>
-    </div>
   </div>
 
-  <div class="card">
-    <h2>Pipeline Stats</h2>
-    <div class="stat-row" id="stats"></div>
-    <div class="target-box" id="targetBox">
-      Target: <span class="cls" id="tCls">enemy</span>
-      conf=<span id="tConf">0.00</span>
-      dist=<span id="tDist">0</span>px
-      pos=(<span id="tX">0</span>, <span id="tY">0</span>)
+  <!-- ── Advanced / Developer Tools ────────────── -->
+  <details>
+    <summary>▸ Advanced &amp; Developer Tools</summary>
+    <div class="card">
+      <h2>Confidence Filter</h2>
+      <label>Min Confidence <span class="val" id="vminConfidence">0.25</span></label>
+      <input type="range" id="minConfidence" min="0.0" max="1.0" step="0.01" value="0.25">
+      <div id="deltaHeadConfRow" style="display:none">
+      <label>Delta Head Conf <span class="val" id="vdeltaHeadConfidence">0.40</span></label>
+      <input type="range" id="deltaHeadConfidence" min="0.10" max="0.80" step="0.01" value="0.40">
+      </div>
     </div>
-  </div>
+    <div class="card">
+      <h2>Pipeline Stats</h2>
+      <div class="stat-row" id="stats"></div>
+      <div class="target-box" id="targetBox">
+        Target: <span class="cls" id="tCls">enemy</span>
+        conf=<span id="tConf">0.00</span>
+        dist=<span id="tDist">0</span>px
+        pos=(<span id="tX">0</span>, <span id="tY">0</span>)
+      </div>
+    </div>
+  </details>
 
-  <div class="footer">Synapse-X · connected to <span id="hostInfo">loading...</span></div>
+  <div class="footer">Synapse-X &middot; connected to <span id="hostInfo">loading...</span></div>
 </div>
 
 <script>
@@ -127,7 +166,6 @@ var HOST = location.origin;
 var $ = function(id) { return document.getElementById(id); };
 var initialConfigLoaded = false;
 
-// ── Config ────────────────────────────────────────────
 function getConfig() {
   return {
     Kp:            parseFloat($('Kp').value),
@@ -135,7 +173,8 @@ function getConfig() {
     aimRange:      parseInt($('aimRange').value),
     minConfidence: parseFloat($('minConfidence').value),
     aimPoint:      parseInt($('aimPoint').value),
-    headOffset:    parseFloat($('headOffset').value),
+    headOffset:         parseFloat($('headOffset').value),
+    deltaHeadConfidence: parseFloat($('deltaHeadConfidence').value),
     gameW:         parseInt($('gameRes').value.split(',')[0]),
     gameH:         parseInt($('gameRes').value.split(',')[1]),
     modelId:       parseInt($('gameSelect').value),
@@ -144,24 +183,28 @@ function getConfig() {
 }
 
 function setConfigUI(cfg) {
-  $('Kp').value            = (cfg.Kp != null) ? cfg.Kp : 0.26;
+  $('Kp').value            = (cfg.Kp != null) ? cfg.Kp : 0.30;
   $('Kd').value            = (cfg.Kd != null) ? cfg.Kd : 0.05;
-  $('aimRange').value      = cfg.aimRange || 500;
+  $('aimRange').value      = cfg.aimRange || 200;
   $('minConfidence').value = cfg.minConfidence || 0.25;
   $('aimPoint').value      = cfg.aimPoint || 0;
-  $('headOffset').value    = cfg.headOffset || 0.12;
+  $('headOffset').value          = cfg.headOffset || 0.20;
+  $('deltaHeadConfidence').value = cfg.deltaHeadConfidence || 0.40;
   var gw = cfg.gameW || 3840, gh = cfg.gameH || 2160;
   $('gameRes').value         = gw + ',' + gh;
   $('gameSelect').value      = cfg.modelId || 0;
   var gn = ['Apex','Delta Force','Battlefield 6','Overwatch 2'];
   $('vgameSelect').textContent = gn[cfg.modelId||0] || 'Apex';
   $('aimEnabled').checked  = cfg.aimEnabled !== false;
-  $('vKp').textContent            = (cfg.Kp||0.26).toFixed(2);
+  $('masterStatus').textContent = $('aimEnabled').checked ? 'ACTIVE' : 'PAUSED';
+  $('vKp').textContent            = (cfg.Kp||0.30).toFixed(2);
   $('vKd').textContent            = (cfg.Kd||0.05).toFixed(2);
-  $('vaimRange').textContent      = cfg.aimRange || 500;
+  $('vaimRange').textContent      = cfg.aimRange || 200;
   $('vminConfidence').textContent = cfg.minConfidence || 0.25;
   $('vaimPoint').textContent      = (cfg.aimPoint===1) ? 'Head' : 'Body';
-  $('vheadOffset').textContent    = (cfg.headOffset||0.12).toFixed(2);
+  $('vheadOffset').textContent    = (cfg.headOffset||0.20).toFixed(2);
+  $('vdeltaHeadConfidence').textContent = (cfg.deltaHeadConfidence||0.40).toFixed(2);
+  updateHeadOffsetUI();
 }
 
 function postConfig() {
@@ -171,8 +214,7 @@ function postConfig() {
   }).catch(function(){});
 }
 
-// ── Slider bindings ────────────────────────────────────
-['Kp','Kd','aimRange','minConfidence','headOffset'].forEach(function(id) {
+['Kp','Kd','aimRange','minConfidence','headOffset','deltaHeadConfidence'].forEach(function(id) {
   $(id).addEventListener('input', function() {
     var v = $(id).value;
     if (id === 'aimRange') v = parseInt(v);
@@ -182,104 +224,39 @@ function postConfig() {
     postConfig();
   });
 });
-$('aimEnabled').addEventListener('change', postConfig);
+$('aimEnabled').addEventListener('change', function() {
+  $('masterStatus').textContent = this.checked ? 'ACTIVE' : 'PAUSED';
+  postConfig();
+});
 $('gameRes').addEventListener('change', postConfig);
+function updateHeadOffsetUI() {
+  var isHead  = $('aimPoint').value === '1';
+  var isDelta = parseInt($('gameSelect').value) === 1;
+  var show = isHead && !isDelta;
+  $('headOffsetRow').style.display = show ? '' : 'none';
+  // Delta head confidence — only for Delta
+  $('deltaHeadConfRow').style.display = isDelta ? '' : 'none';
+}
 $('gameSelect').addEventListener('change', function() {
   var names = ['Apex','Delta Force','Battlefield 6','Overwatch 2'];
   $('vgameSelect').textContent = names[parseInt(this.value)] || 'Apex';
+  updateHeadOffsetUI();
   postConfig();
 });
 $('aimPoint').addEventListener('change', function() {
   $('vaimPoint').textContent = this.value==='1' ? 'Head' : 'Body';
+  updateHeadOffsetUI();
   postConfig();
 });
 
-// ── Oscilloscope drawing ───────────────────────────────
-var canvas = $('scopeCanvas');
-var ctx = canvas.getContext('2d');
-var W = canvas.width;
-var H = canvas.height;
-
-function drawScope(scope) {
-  var N = scope.rawDx.length;
-  ctx.clearRect(0, 0, W, H);
-
-  if (N < 2) {
-    ctx.fillStyle = '#8b949e';
-    ctx.font = '14px monospace';
-    ctx.fillText('Waiting for data... (' + N + ' points)', 10, H/2);
-    return;
-  }
-
-  // Y range
-  var yMin = 1e9, yMax = -1e9;
-  var keys = ['rawDx','emaDx','output','residual'];
-  for (var k = 0; k < keys.length; k++) {
-    var arr = scope[keys[k]];
-    for (var i = 0; i < arr.length; i++) {
-      var v = arr[i];
-      if (v < yMin) yMin = v;
-      if (v > yMax) yMax = v;
-    }
-  }
-  if (yMin >= yMax) { yMin = -50; yMax = 50; }
-  if (yMax - yMin < 10) { var mid = (yMin+yMax)/2; yMin = mid-5; yMax = mid+5; }
-
-  function toX(i) { return (i / (N-1)) * W; }
-  function toY(v) { return H - ((v - yMin) / (yMax - yMin)) * H; }
-
-  // Grid
-  ctx.strokeStyle = '#21262d';
-  ctx.lineWidth = 1;
-  // zero line
-  if (yMin < 0 && yMax > 0) {
-    var zy = toY(0);
-    ctx.beginPath(); ctx.moveTo(0,zy); ctx.lineTo(W,zy); ctx.stroke();
-  }
-  // quarter lines
-  for (var gy = 0; gy <= 1; gy += 0.25) {
-    var yy = toY(yMin + gy*(yMax-yMin));
-    ctx.beginPath(); ctx.moveTo(0,yy); ctx.lineTo(W,yy); ctx.stroke();
-  }
-
-  // Y labels
-  ctx.fillStyle = '#8b949e';
-  ctx.font = '10px monospace';
-  var topText = yMax.toFixed(0);
-  var botText = yMin.toFixed(0);
-  ctx.fillText(topText, 2, 12);
-  ctx.fillText(botText, 2, H-4);
-
-  // Draw 4 signals
-  var colors = {rawDx:'#f85149', emaDx:'#3fb950', output:'#58a6ff', residual:'#d2991d'};
-  for (var k2 = 0; k2 < keys.length; k2++) {
-    var key = keys[k2];
-    var arr2 = scope[key];
-    ctx.strokeStyle = colors[key];
-    ctx.lineWidth = (key === 'emaDx' || key === 'output') ? 2 : 1;
-    ctx.beginPath();
-    for (var j = 0; j < arr2.length; j++) {
-      var y = toY(arr2[j]);
-      if (y < -2) y = -2; if (y > H+2) y = H+2;
-      if (j === 0) ctx.moveTo(toX(j), y);
-      else ctx.lineTo(toX(j), y);
-    }
-    ctx.stroke();
-  }
-}
-
-// ── Polling loop ──────────────────────────────────────
 function poll() {
   fetch(HOST+'/api/state')
     .then(function(r) { return r.json(); })
     .then(function(s) {
-      // Init config from server on first load
       if (!initialConfigLoaded && s.config) {
         setConfigUI(s.config);
         initialConfigLoaded = true;
       }
-
-      // Stats
       $('stats').innerHTML =
         '<div class="stat-item">Send FPS <span class="stat-val good">'+s.sendFps.toFixed(0)+'</span></div>'+
         '<div class="stat-item">Capture FPS <span class="stat-val">'+s.captureFps.toFixed(0)+'</span></div>'+
@@ -289,8 +266,6 @@ function poll() {
         '<div class="stat-item">Cache frames <span class="stat-val">'+s.cacheFrames+'</span></div>'+
         '<div class="stat-item">Total sent <span class="stat-val">'+s.totalSent+'</span></div>'+
         '<div class="stat-item">Uptime <span class="stat-val">'+(s.totalSent/170).toFixed(0)+'s</span></div>';
-
-      // Target
       if (s.target && s.target.active) {
         $('targetBox').className = 'target-box active';
         $('tCls').textContent = s.target.classId===0 ? 'enemy' : 'teammate';
@@ -301,16 +276,8 @@ function poll() {
       } else {
         $('targetBox').className = 'target-box';
       }
-
-      // Scope
-      if (s.scope && s.scope.rawDx && s.scope.rawDx.length > 0) {
-        drawScope(s.scope);
-      }
     })
-    .catch(function(e) {
-      console.error('poll error:', e);
-    });
-
+    .catch(function(e) { console.error('poll error:', e); });
   setTimeout(poll, 500);
 }
 

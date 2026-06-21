@@ -1,6 +1,6 @@
 # Synapse-X Host — Architecture & Implementation Guide
 
-> **Version**: 2026-06-19  
+> **Version**: 2026-06-19 (final)  
 > **Target audience**: New architects / engineers onboarding the Host codebase.  
 > **Covers**: Pipeline, every module, config, Web UI, tuning, env pitfalls.
 
@@ -190,7 +190,7 @@ Input: dx, dy (pixel error from screen center)
 | `aimRange` | 500 | 50–1000 | Engagement radius (px) |
 | `minConfidence` | 0.25 | 0–1 | Ignore below this |
 | `aimPoint` | 0 | 0/1 | 0=body center, 1=head |
-| `headOffset` | 0.12 | 0.05–0.25 | Head position (bbox top %) |
+| `headOffset` | 0.20 | 0.05–0.25 | Head position (bbox top %). **Delta+Head: slider hidden** — real head, no offset needed |
 | `gameW/gameH` | 3840/2160 | dropdown | Game resolution for auto-stretch |
 | `nativeW/nativeH` | 3840/2160 | fixed | Monitor native res |
 | `modelId` | 0 | 0/1 | Model selector (0=416, 1=640) |
@@ -239,9 +239,18 @@ Each tick (5.88 ms):
 - Priority `THREAD_PRIORITY_TIME_CRITICAL`
 - `timeBeginPeriod(1)` — 1ms timer resolution (default is 15.6ms)
 
-**Spatial target lock** (anti-ping-pong):
-- Locked: search within 80px of last position. If found → maintain. If lost for >5 frames → unlock.
-- Unlocked: acquire closest enemy to screen center.
+**Data Normalizer** — converts raw detections to `AimPoint{cx, cy, priority, distance}`:
+
+| modelId | Game | Head source | Confidence rule | Priority |
+|---------|------|-------------|-----------------|----------|
+| 0,3 | Apex/OW2 | Computed (`y1 + bh×headOffset`) | Must pass `minConfidence` | 1 |
+| 1 | Delta | classId=1 real head; classId=0 body→faked head | **Head bypasses**; body filtered | 1=real, 2=faked |
+| 2 | BF6 | Computed (`y1 + bh×headOffset`) | Pass `minConfidence`; teammate dropped | 1 |
+
+**Priority-Aware Spatial Lock** — tracks `lockedPriority` (1 or 2):
+
+Phase A (Maintain, 80px radius): pri=1 nearest → maintain/upgrade; no pri=1 but pri=2 → downgrade (keep lock); neither → lostFrames, unlock after 5.  
+Phase B (Acquire, global): pri=1 nearest within `aimRange` → lock; no pri=1 → nearest pri=2.
 
 **Auto-stretch compensation**:
 - Web dropdown picks game resolution (e.g. 2880×2160 on 4K monitor)

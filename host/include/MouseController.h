@@ -26,12 +26,13 @@
 namespace SynapseX {
 
 struct AimConfig {
-    float Kp              = 0.26f;   // Proportional gain
+    float Kp              = 0.30f;   // Proportional gain
     float Kd              = 0.05f;   // Derivative gain (velocity damping)
-    float aimRange        = 500.0f;  // max px from screen center to engage
-    float minConfidence   = 0.25f;   // ignore detections below this
-    int   aimPoint        = 0;       // 0 = body (center), 1 = head (top)
-    float headOffset      = 0.12f;   // head aim: top fraction of bbox
+    float aimRange        = 200.0f;  // max px from screen center to engage
+    float minConfidence       = 0.25f;  // global confidence filter
+    float deltaHeadConfidence = 0.40f;  // Delta head-specific filter
+    int   aimPoint            = 0;      // 0 = body (center), 1 = head (top)
+    float headOffset      = 0.20f;   // head aim: top fraction of bbox
     int   nativeW         = 3840;    // monitor native width
     int   nativeH         = 2160;    // monitor native height
     int   gameW           = 3840;    // game actual width (from web dropdown)

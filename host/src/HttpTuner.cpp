@@ -140,8 +140,9 @@ void HttpTuner::ServerThread() {
         json += jsonStr("Kp",            m_state.config.Kp) + ",";
         json += jsonStr("Kd",            m_state.config.Kd) + ",";
         json += jsonStr("aimRange",      (int)m_state.config.aimRange) + ",";
-        json += jsonStr("minConfidence", m_state.config.minConfidence) + ",";
-        json += jsonStr("aimPoint",      m_state.config.aimPoint) + ",";
+        json += jsonStr("minConfidence",       m_state.config.minConfidence) + ",";
+        json += jsonStr("deltaHeadConfidence", m_state.config.deltaHeadConfidence) + ",";
+        json += jsonStr("aimPoint",            m_state.config.aimPoint) + ",";
         json += jsonStr("headOffset",    m_state.config.headOffset) + ",";
         json += jsonStr("gameW",        (int)m_state.config.gameW) + ",";
         json += jsonStr("gameH",        (int)m_state.config.gameH) + ",";
@@ -182,8 +183,9 @@ void HttpTuner::ServerThread() {
         if (extractFloat(body, "Kp", f))            m_state.config.Kp            = f;
         if (extractFloat(body, "Kd", f))            m_state.config.Kd            = f;
         if (extractFloat(body, "aimRange", f))      m_state.config.aimRange      = f;
-        if (extractFloat(body, "minConfidence", f)) m_state.config.minConfidence = f;
-        if (extractFloat(body, "headOffset", f))    m_state.config.headOffset    = f;
+        if (extractFloat(body, "minConfidence", f))       m_state.config.minConfidence       = f;
+        if (extractFloat(body, "deltaHeadConfidence", f)) m_state.config.deltaHeadConfidence = f;
+        if (extractFloat(body, "headOffset", f))          m_state.config.headOffset          = f;
         if (extractFloat(body, "gameW", f))         m_state.config.gameW         = (int)f;
         if (extractFloat(body, "gameH", f))         m_state.config.gameH         = (int)f;
         if (extractFloat(body, "modelId", f))       m_state.config.modelId       = (uint8_t)f;
@@ -210,6 +212,11 @@ AimConfig HttpTuner::GetConfig() const {
 bool HttpTuner::IsAimEnabled() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_state.aimEnabled;
+}
+
+void HttpTuner::SetAimEnabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_state.aimEnabled = enabled;
 }
 
 void HttpTuner::UpdateStats(double sendFps, double captureFps,

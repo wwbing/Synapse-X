@@ -54,12 +54,19 @@ struct PerfStats {
     }
 };
 
+// ── Intermediate aim-point (unified across all models) ──
+struct AimPoint {
+    float cx, cy;       // screen-space target coordinates
+    int   priority;     // 1 = primary (real head / single-class), 2 = fallback (body-faked head)
+    float distance;     // px from screen center
+};
+
 int main(int argc, char* argv[]) {
     // ── Parse arguments ──────────────────────────────────
     const char* targetIp   = (argc > 1) ? argv[1] : "192.168.100.2";
     uint16_t    targetPort = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 8888;
-    int         roiW       = (argc > 3) ? std::atoi(argv[3]) : 640;
-    int         roiH       = (argc > 4) ? std::atoi(argv[4]) : 640;
+    int         roiW       = (argc > 3) ? std::atoi(argv[3]) : 416;
+    int         roiH       = (argc > 4) ? std::atoi(argv[4]) : 416;
 
     if (roiW < 64 || roiH < 64 || roiW > 4096 || roiH > 4096) {
         fprintf(stderr, "[FATAL] Invalid ROI: %dx%d (min 64, max 4096)\n", roiW, roiH);
@@ -171,14 +178,15 @@ int main(int argc, char* argv[]) {
     const uint16_t roiW16 = static_cast<uint16_t>(roiW);
     const uint16_t roiH16 = static_cast<uint16_t>(roiH);
 
-    // ── Spatial lock state (anti-ping-pong) ────────────────
+    // ── Spatial lock state (priority-aware) ────────────────
     constexpr float kKeepLockRadius = 80.0f;   // px — max dist to maintain lock
     constexpr int   kMaxLostFrames  = 5;       // frames before giving up
 
-    bool  isLocked       = false;
-    float lockedTargetX  = 0.0f;
-    float lockedTargetY  = 0.0f;
-    int   lostFrames     = 0;
+    bool  isLocked        = false;
+    float lockedTargetX   = 0.0f;
+    float lockedTargetY   = 0.0f;
+    int   lostFrames      = 0;
+    int   lockedPriority  = 0;  // 1=primary, 2=fallback
 
     auto nextTick = Clock::now();
 
@@ -186,6 +194,20 @@ int main(int argc, char* argv[]) {
     //  MAIN LOOP — Fixed 170 Hz
     // ═══════════════════════════════════════════════════════
     while (g_running) {
+        // ── Hotkeys: PageUp=ON, PageDown=OFF ──────────────
+        if (GetAsyncKeyState(VK_PRIOR) & 0x8000) {  // PageUp
+            if (!tuner.IsAimEnabled()) {
+                tuner.SetAimEnabled(true);
+                fprintf(stderr, "[Hotkey] Aim ON\n");
+            }
+        }
+        if (GetAsyncKeyState(VK_NEXT) & 0x8000) {   // PageDown
+            if (tuner.IsAimEnabled()) {
+                tuner.SetAimEnabled(false);
+                fprintf(stderr, "[Hotkey] Aim OFF\n");
+            }
+        }
+
         // ── Stage 1: Capture (try every tick) ─────────────
         auto t0 = Clock::now();
         bool gotFrame = capturer.CaptureFrame(rawBuffer);
@@ -265,160 +287,187 @@ int main(int argc, char* argv[]) {
             uint32_t replyFrameId = 0;
             if (replyReceiver.ReceiveReplies(detections, replyFrameId)) {
                 if (!detections.empty()) {
-                    // ── Data Normalization Layer ──────────────────
-                    // Filter detections based on current modelId.
-                    // Each model has different class semantics;
-                    // we extract only "attackable target" (enemy body).
                     auto aimCfg = tuner.GetConfig();
                     uint8_t modelId = aimCfg.modelId;
 
-                    static uint8_t lastModelId = 0xFF; // sentinel
+                    static uint8_t lastModelId = 0xFF;
                     if (modelId != lastModelId) {
                         fprintf(stderr, "[Model] Switched to ID %u\n",
                                 static_cast<unsigned>(modelId));
                         lastModelId = modelId;
                     }
 
-                    std::vector<SynapseX::Detection> validTargets;
-                    validTargets.reserve(detections.size());
+                    // ── Data Normalizer: all models → unified AimPoint[] ──
+                    float scrCx = static_cast<float>(screenW) * 0.5f;
+                    float scrCy = static_cast<float>(screenH) * 0.5f;
+
+                    std::vector<AimPoint> aimPoints;
+                    aimPoints.reserve(detections.size() * 2); // Delta may double
 
                     for (const auto& d : detections) {
-                        bool keep = false;
+                        float bw = d.x2 - d.x1;
+                        float bh = d.y2 - d.y1;
+                        float bcx = (d.x1 + d.x2) * 0.5f;
+                        float bcyCenter = (d.y1 + d.y2) * 0.5f;
+                        float bcyHead   = d.y1 + bh * aimCfg.headOffset;
+
+                        AimPoint ap;
+                        ap.cx = bcx;
+
                         switch (modelId) {
-                        case 0: // apex_enemy_416: classId 0 = enemy
-                        case 3: // ow2_enemy_416:   classId 0 = enemy
-                            keep = (d.classId == 0);
+                        case 0: // Apex      — 1-class: classId 0 = enemy
+                        case 3: // OW2       — 1-class: classId 0 = enemy
+                            if (d.classId == 0 && d.confidence >= aimCfg.minConfidence) {
+                                ap.cy       = (aimCfg.aimPoint == 1) ? bcyHead : bcyCenter;
+                                ap.priority = 1;
+                                ap.distance = std::sqrt((bcx-scrCx)*(bcx-scrCx) + (ap.cy-scrCy)*(ap.cy-scrCy));
+                                aimPoints.push_back(ap);
+                            }
                             break;
-                        case 1: // delta_body_head_416: classId 0 = body, 1 = head (drop)
-                            keep = (d.classId == 0);
+
+                        case 1: // Delta     — 2-class: 0=body, 1=head
+                            if (aimCfg.aimPoint == 1) {
+                                if (d.classId == 1 && d.confidence >= aimCfg.deltaHeadConfidence) {
+                                    ap.cy       = bcyCenter;
+                                    ap.priority = 1;
+                                } else if (d.classId == 0 && d.confidence >= aimCfg.minConfidence) {
+                                    ap.cy       = bcyHead;   // body → faked head (filtered)
+                                    ap.priority = 2;
+                                } else { break; }
+                            } else {
+                                // Body mode: only body, filtered by confidence
+                                if (d.classId != 0 || d.confidence < aimCfg.minConfidence) break;
+                                ap.cy       = bcyCenter;
+                                ap.priority = 1;
+                            }
+                            ap.distance = std::sqrt((bcx-scrCx)*(bcx-scrCx) + (ap.cy-scrCy)*(ap.cy-scrCy));
+                            aimPoints.push_back(ap);
                             break;
-                        case 2: // bf6_enemy_self_416: classId 0 = enemy, 1 = teammate (drop)
-                            keep = (d.classId == 0);
+
+                        case 2: // BF6       — 2-class: 0=enemy, 1=teammate (DROP)
+                            if (d.classId == 0 && d.confidence >= aimCfg.minConfidence) {
+                                ap.cy       = (aimCfg.aimPoint == 1) ? bcyHead : bcyCenter;
+                                ap.priority = 1;
+                                ap.distance = std::sqrt((bcx-scrCx)*(bcx-scrCx) + (ap.cy-scrCy)*(ap.cy-scrCy));
+                                aimPoints.push_back(ap);
+                            }
                             break;
+
                         default:
-                            keep = (d.classId == 0); // unknown model: assume classId 0
+                            if (d.classId == 0 && d.confidence >= aimCfg.minConfidence) {
+                                ap.cy       = (aimCfg.aimPoint == 1) ? bcyHead : bcyCenter;
+                                ap.priority = 1;
+                                ap.distance = std::sqrt((bcx-scrCx)*(bcx-scrCx) + (ap.cy-scrCy)*(ap.cy-scrCy));
+                                aimPoints.push_back(ap);
+                            }
                             break;
                         }
-                        if (keep) validTargets.push_back(d);
                     }
 
-                    // Replace raw detections with normalized set
-                    detections.swap(validTargets);
+                    if (!aimPoints.empty()) {
+                        const AimPoint* best = nullptr;
+                        float bestDist = 1e9f;
 
-                    if (!detections.empty()) {
-                    const SynapseX::Detection* best = nullptr;
-                    float bestDist = 1e9f;
-                    float screenCx = static_cast<float>(screenW) * 0.5f;
-                    float screenCy = static_cast<float>(screenH) * 0.5f;
+                        if (isLocked) {
+                            // ── Phase A: Maintain Lock ──────────────
+                            const AimPoint* bestPri1 = nullptr;
+                            const AimPoint* bestPri2 = nullptr;
+                            float dPri1 = 1e9f, dPri2 = 1e9f;
 
-                    if (isLocked) {
-                        // ── Phase A: Maintain Lock ──────────────────
-                        for (const auto& d : detections) {
-                            if (d.classId != 0) continue;
-                            float cx = (d.x1 + d.x2) * 0.5f;
-                            float cy = (d.y1 + d.y2) * 0.5f;
-                            float dist = std::sqrt(
-                                (cx - lockedTargetX) * (cx - lockedTargetX) +
-                                (cy - lockedTargetY) * (cy - lockedTargetY));
-                            if (dist < bestDist) {
-                                best = &d;
-                                bestDist = dist;
+                            for (const auto& ap : aimPoints) {
+                                float d = std::sqrt(
+                                    (ap.cx - lockedTargetX) * (ap.cx - lockedTargetX) +
+                                    (ap.cy - lockedTargetY) * (ap.cy - lockedTargetY));
+                                if (d < kKeepLockRadius) {
+                                    if (ap.priority == 1 && d < dPri1) {
+                                        dPri1 = d; bestPri1 = &ap;
+                                    } else if (ap.priority == 2 && d < dPri2) {
+                                        dPri2 = d; bestPri2 = &ap;
+                                    }
+                                }
                             }
-                        }
 
-                        if (best && bestDist < kKeepLockRadius) {
-                            // Target still within lock radius — maintain
-                            lockedTargetX = (best->x1 + best->x2) * 0.5f;
-                            lockedTargetY = (best->y1 + best->y2) * 0.5f;
-                            lostFrames = 0;
-                        } else {
-                            // Target drifted away or disappeared
-                            lostFrames++;
-                            if (lostFrames > kMaxLostFrames) {
-                                isLocked = false;
+                            if (bestPri1) {
+                                best = bestPri1;
+                                lockedPriority = 1;
                                 lostFrames = 0;
+                            } else if (bestPri2) {
+                                best = bestPri2;
+                                lockedPriority = 2;
+                                lostFrames = 0;
+                            } else {
+                                lostFrames++;
+                                if (lostFrames > kMaxLostFrames) {
+                                    isLocked = false;
+                                    lostFrames = 0;
+                                    lockedPriority = 0;
+                                }
                             }
-                            best = nullptr;  // suppress PD this frame
-                        }
-                    } else {
-                        // ── Phase B: Acquire Lock ───────────────────
-                        // Closest enemy to screen center (original logic)
-                        for (const auto& d : detections) {
-                            if (d.classId != 0) continue;
-                            float cx = (d.x1 + d.x2) * 0.5f;
-                            float cy = (d.y1 + d.y2) * 0.5f;
-                            float dist = std::sqrt(
-                                (cx - screenCx) * (cx - screenCx) +
-                                (cy - screenCy) * (cy - screenCy));
-                            // Highest confidence; tie-break by distance
-                            if (!best || d.confidence > best->confidence ||
-                                (d.confidence == best->confidence && dist < bestDist)) {
-                                best = &d;
-                                bestDist = dist;
+                        } else {
+                            // ── Phase B: Acquire Lock ───────────────
+                            const AimPoint* bestPri1 = nullptr;
+                            const AimPoint* bestPri2 = nullptr;
+                            float dPri1 = 1e9f, dPri2 = 1e9f;
+
+                            for (const auto& ap : aimPoints) {
+                                if (ap.distance > aimCfg.aimRange) continue;
+                                if (ap.priority == 1 && ap.distance < dPri1) {
+                                    dPri1 = ap.distance; bestPri1 = &ap;
+                                } else if (ap.priority == 2 && ap.distance < dPri2) {
+                                    dPri2 = ap.distance; bestPri2 = &ap;
+                                }
+                            }
+
+                            if (bestPri1) {
+                                best = bestPri1;
+                                lockedPriority = 1;
+                                isLocked = true;
+                                lostFrames = 0;
+                            } else if (bestPri2) {
+                                best = bestPri2;
+                                lockedPriority = 2;
+                                isLocked = true;
+                                lostFrames = 0;
                             }
                         }
 
                         if (best) {
-                            isLocked      = true;
-                            lostFrames    = 0;
-                            lockedTargetX = (best->x1 + best->x2) * 0.5f;
-                            lockedTargetY = (best->y1 + best->y2) * 0.5f;
-                        }
-                    }
+                            lockedTargetX = best->cx;
+                            lockedTargetY = best->cy;
 
-                    if (best) {
-                        auto aimCfg = tuner.GetConfig();
+                            float autoScaleX = (screenW > 0)
+                                ? static_cast<float>(aimCfg.gameW) / static_cast<float>(screenW) : 1.0f;
+                            float autoScaleY = (screenH > 0)
+                                ? static_cast<float>(aimCfg.gameH) / static_cast<float>(screenH) : 1.0f;
 
-                        // Compute raw aim point (pre-filter)
-                        float bboxH = best->y2 - best->y1;
-                        float rawCx = (best->x1 + best->x2) * 0.5f;
-                        float rawCy;
-                        if (aimCfg.aimPoint == 1) {
-                            rawCy = best->y1 + bboxH * aimCfg.headOffset;
-                        } else {
-                            rawCy = (best->y1 + best->y2) * 0.5f;
-                        }
+                            float dx = (best->cx - scrCx) * autoScaleX;
+                            float dy = (best->cy - scrCy) * autoScaleY;
 
-                        // Auto-stretch compensation
-                        // e.g. 2880 game on 3840 native → autoScale=0.75
-                        float autoScaleX = (screenW > 0)
-                            ? static_cast<float>(aimCfg.gameW) / static_cast<float>(screenW)
-                            : 1.0f;
-                        float autoScaleY = (screenH > 0)
-                            ? static_cast<float>(aimCfg.gameH) / static_cast<float>(screenH)
-                            : 1.0f;
+                            bestDist = best->distance;
 
-                        float dx = (rawCx - static_cast<float>(screenW) * 0.5f) * autoScaleX;
-                        float dy = (rawCy - static_cast<float>(screenH) * 0.5f) * autoScaleY;
+                            tuner.UpdateTarget(best->cx, best->cy,
+                                               1.0f, bestDist, 0);
 
-                        // Update web panel target info
-                        tuner.UpdateTarget(rawCx, rawCy,
-                                           best->confidence, bestDist,
-                                           static_cast<int>(best->classId));
+                            mouse.SetConfig(aimCfg);
 
-                        mouse.SetConfig(aimCfg);
-
-                        if (tuner.IsAimEnabled() &&
-                            mouse.AimAtTarget(dx, dy,
-                                              best->confidence,
-                                              screenW, screenH, aimCfg)) {
-                            static int aimCount = 0;
-                            if (++aimCount % 30 == 1) {
-                                fprintf(stderr,
-                                    "[Aim] tgt=%.0f,%.0f conf=%.2f dist=%.0f\n",
-                                    static_cast<double>(rawCx),
-                                    static_cast<double>(rawCy),
-                                    static_cast<double>(best->confidence),
-                                    static_cast<double>(bestDist));
+                            if (tuner.IsAimEnabled() &&
+                                mouse.AimAtTarget(dx, dy, 1.0f,
+                                                  screenW, screenH, aimCfg)) {
+                                static int aimCount = 0;
+                                if (++aimCount % 30 == 1) {
+                                    fprintf(stderr,
+                                        "[Aim] tgt=%.0f,%.0f pri=%d dist=%.0f\n",
+                                        static_cast<double>(best->cx),
+                                        static_cast<double>(best->cy),
+                                        best->priority,
+                                        static_cast<double>(bestDist));
+                                }
                             }
                         }
                     }
                 }
-                }
             }
-        }
-
-        // ── Per-second stats report ──────────────────────
+        }        // ── Per-second stats report ──────────────────────
         double elapsed = ToMs(Clock::now() - windowStart) / 1000.0;
         if (elapsed >= 1.0) {
             double sendFps    = stats.sent / elapsed;
