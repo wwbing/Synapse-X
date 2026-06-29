@@ -195,13 +195,13 @@ int main(int argc, char* argv[]) {
     // ═══════════════════════════════════════════════════════
     while (g_running) {
         // ── Hotkeys: PageUp=ON, PageDown=OFF ──────────────
-        if (GetAsyncKeyState(VK_PRIOR) & 0x8000) {  // PageUp
+        if (GetAsyncKeyState(VK_PRIOR) & 1) {
             if (!tuner.IsAimEnabled()) {
                 tuner.SetAimEnabled(true);
                 fprintf(stderr, "[Hotkey] Aim ON\n");
             }
         }
-        if (GetAsyncKeyState(VK_NEXT) & 0x8000) {   // PageDown
+        if (GetAsyncKeyState(VK_NEXT) & 1) {
             if (tuner.IsAimEnabled()) {
                 tuner.SetAimEnabled(false);
                 fprintf(stderr, "[Hotkey] Aim OFF\n");
