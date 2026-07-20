@@ -246,7 +246,7 @@ static void ConsumerThread(ConsumerCtx* ctx) {
 
             // ── 定期打印检测结果 ─────────────────────────
             if (localFrameCount % kPrintDetEvery == 0 && !dets.empty()) {
-                static const char* kApexCls[]    = {"enemy"};
+                static const char* kApexCls[]    = {"teammate", "enemy"};
                 static const char* kDeltaCls[]   = {"body", "head"};
                 static const char* kBf6Cls[]     = {"enemy", "teammate"};
                 static const char* kOw2Cls[]     = {"enemy"};
@@ -258,7 +258,7 @@ static void ConsumerThread(ConsumerCtx* ctx) {
                 uint8_t mid = ctx->trt->GetCurrentModelId();
                 const char* gameName; const char* const* clsNames; int numCls;
                 switch (mid) {
-                    case 0: gameName="Apex";      clsNames=kApexCls;    numCls=1; break;
+                    case 0: gameName="Apex";      clsNames=kApexCls;    numCls=2; break;
                     case 1: gameName="Delta";     clsNames=kDeltaCls;   numCls=2; break;
                     case 2: gameName="BF6";       clsNames=kBf6Cls;     numCls=2; break;
                     case 3: gameName="OW2";       clsNames=kOw2Cls;     numCls=1; break;

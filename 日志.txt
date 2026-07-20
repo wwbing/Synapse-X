@@ -1,0 +1,3 @@
+set "PATH=C:\Program Files\NVIDIA\TensorRT-10.16.1.11.Windows.amd64.cuda-13.2\TensorRT-10.16.1.11\bin;%PATH%"
+
+"C:\Program Files\NVIDIA\TensorRT-10.16.1.11.Windows.amd64.cuda-13.2\TensorRT-10.16.1.11\bin\trtexec" --onnx="C:\Users\jiahao\Desktop\code\Synapse-X\client\model\onnx\apex_enemy_self_416.onnx" --saveEngine="C:\Users\jiahao\Desktop\code\Synapse-X\client\model\engine\apex_enemy_self_416.engine" --fp16

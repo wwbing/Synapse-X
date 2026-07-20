@@ -72,7 +72,7 @@ if (g_targetModelId != m_currentModelId):
 
 | modelId | 游戏 | 引擎文件路径 |
 |---------|------|-------------|
-| 0 | Apex Legends(新) | `../../model/engine/apex_enemy_self_416.engine` |
+| 0 | Apex Legends(新) | `../../model/engine/apex_enemy_self_416.engine` | 队友(0), 敌人(1) |
 | 1 | Delta Force | `../../model/engine/delta_body_head_416.engine` |
 | 2 | Battlefield 6 | `../../model/engine/bf6_enemy_self_new.engine` |
 | 3 | Overwatch 2 | `../../model/engine/ow2_enemy_416.engine` |

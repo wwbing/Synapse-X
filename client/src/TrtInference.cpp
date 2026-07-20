@@ -86,7 +86,7 @@ static size_t DimsVolume(const nvinfer1::Dims& dims) {
 
 std::string TrtInference::GetModelPath(uint8_t modelId) {
     switch (modelId) {
-        case 0:  return "../../model/engine/apex_enemy_416.engine";       // Apex Legends，1类：敌人
+        case 0:  return "../../model/engine/apex_enemy_self_416.engine"; // Apex Legends(新)，2类：队友, 敌人
         case 1:  return "../../model/engine/delta_body_head_416.engine";  // Delta Force，2类：身体，头部
         case 2:  return "../../model/engine/bf6_enemy_self_new.engine";   // Battlefield 6，2类：敌人，队友
         case 3:  return "../../model/engine/ow2_enemy_416.engine";        // Overwatch 2，1类：敌人
