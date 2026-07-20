@@ -321,7 +321,15 @@ int main(int argc, char* argv[]) {
                         ap.cx = bcx;
 
                         switch (modelId) {
-                        case 0: // Apex      -- 1类：classId 0 = 敌人
+                        case 0: // Apex(新) -- 2类：0=队友, 1=敌人（保留classId=1）
+                            if (d.classId == 1 && d.confidence >= aimCfg.minConfidence) {
+                                ap.cy       = (aimCfg.aimPoint == 1) ? bcyHead : bcyCenter;
+                                ap.priority = 1;
+                                ap.distance = std::sqrt((bcx-scrCx)*(bcx-scrCx) + (ap.cy-scrCy)*(ap.cy-scrCy));
+                                aimPoints.push_back(ap);
+                            }
+                            break;
+
                         case 3: // OW2       -- 1类：classId 0 = 敌人
                         case 4: // Aimlabs   -- 1类：classId 0 = 敌人
                             if (d.classId == 0 && d.confidence >= aimCfg.minConfidence) {

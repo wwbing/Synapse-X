@@ -182,7 +182,7 @@ Synapse-X/
 
 | modelId | 游戏 | 引擎文件 | 类别 |
 |---------|------|----------|------|
-| 0 | Apex Legends | `apex_enemy_416.engine` | 1类：敌人 |
+| 0 | Apex Legends | `apex_enemy_self_416.engine` | 2类：队友(0), 敌人(1) — 保留classId=1 |
 | 1 | Delta Force | `delta_body_head_416.engine` | 2类：身体(0), 头部(1) |
 | 2 | Battlefield 6 | `bf6_enemy_self_new.engine` | 2类：敌人(0), 队友(1) |
 | 3 | Overwatch 2 | `ow2_enemy_416.engine` | 1类：敌人 |

@@ -125,10 +125,10 @@ Producer (main thread, core 0):         Consumer (std::thread, core 1):
 - **Read by:** TrtInference::Infer() consumer thread at the top of every call.
 - **Switch sequence:** `cudaStreamSynchronize` → `UnloadEngine()` (free GPU buffers, delete context/engine) → `LoadEngineFile(targetId)` → return empty detections (discard stale frame).
 
-Model ID mapping (6 games):
+Model ID mapping (8 games):
 | ID | Game | Classes |
 |----|------|---------|
-| 0 | Apex Legends | 1: enemy |
+| 0 | Apex Legends | 2: teammate (classId=0), enemy (classId=1) — 保留classId=1 |
 | 1 | Delta Force | 2: body, head |
 | 2 | Battlefield 6 | 2: enemy, teammate |
 | 3 | Overwatch 2 | 1: enemy |

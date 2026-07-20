@@ -217,7 +217,7 @@ SynapseX_Host.exe [目标IP] [端口] [roi宽] [roi高]
 
 | modelId | 游戏 | 类别 | 逻辑 |
 |---------|------|------|------|
-| 0 | Apex | 1类: 敌人 | classId==0, minConfidence |
+| 0 | Apex(新) | 2类: 队友/敌人 | classId==1, minConfidence; classId==0 丢弃 |
 | 1 | Delta | 2类: 身体/头部 | head(classId==1, deltaHeadConf)→pri1; body(classId==0)→pri2 |
 | 2 | BF6 | 2类: 敌人/队友 | classId==0, minConfidence; classId==1 丢弃 |
 | 3 | OW2 | 1类: 敌人 | classId==0, minConfidence |
